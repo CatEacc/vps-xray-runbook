@@ -11,6 +11,7 @@
 # ==============================================================================
 
 set -euo pipefail
+trap 'rm -rf /tmp/setup_result.txt /tmp/xray-install' EXIT
 
 XUI_VERSION="v3.11.0"
 XRAY_VERSION="v26.11.9"
@@ -453,6 +454,7 @@ ENABLE_RELAY="$ENABLE_RELAY" RES_IP="$RES_IP" RES_PORT="$RES_PORT" RES_SS_PASS="
 XRAY_BIN="$XRAY_BIN" \
 python3 - << 'PYEOF' > /tmp/setup_result.txt
 import sqlite3, json, os, uuid, secrets, subprocess, base64
+os.umask(0o077)
 
 mode = os.environ['MODE']
 submode = os.environ['REALITY_SUBMODE']
@@ -763,6 +765,8 @@ if [ "$MODE" = "3" ]; then
       mode: 4"
     fi
 
+    (
+    umask 077
     cat << EOF > /etc/hysteria/config.yaml
 listen: :${LISTEN_PORT}
 ${BW_BLOCK}
@@ -800,6 +804,7 @@ masquerade:
     rewriteHost: true
 ${OUTBOUND_BLOCK}
 EOF
+    )
     id -u hysteria >/dev/null 2>&1 && chown -R hysteria:hysteria /etc/hysteria || true
     chmod 644 /etc/hysteria/server.crt
     chmod 640 /etc/hysteria/server.key /etc/hysteria/config.yaml
