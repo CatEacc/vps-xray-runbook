@@ -445,6 +445,7 @@ if [ "$MODE" = "2" ] || [ "$MODE" = "3" ]; then
     chmod 640 /etc/hysteria/server.key
 fi
 
+install -m 600 /dev/null /tmp/setup_result.txt
 XRAY_BUF=$([ "${MEM_MB:-1000}" -le 700 ] && echo 32 || echo 64) \
 MODE="$MODE" REALITY_SUBMODE="$REALITY_SUBMODE" LISTEN_PORT="$LISTEN_PORT" \
 REALITY_SNI="$REALITY_SNI" CF_DOMAIN="$CF_DOMAIN" SERVER_IP="$SERVER_IP" \
@@ -671,6 +672,7 @@ conn.commit()
 conn.execute("VACUUM")
 conn.close()
 PYEOF
+chmod 600 /etc/x-ui/x-ui.db 2>/dev/null || true
 
 # 若为家宽落地机且填写了前置白名单 IP，自动部署 nftables 保护端口
 if [ "$MODE" = "1" ] && [ "$REALITY_SUBMODE" = "3" ] && [ -n "$RES_WHITELIST_IP" ]; then
