@@ -111,8 +111,9 @@ if [ -z "$MODE" ]; then
     printf "  ${GREEN}[3]${R} ${WHITE}Hysteria 2 + 端口跳跃${R} ${PINK}· UDP 20000-50000 · 可选中转家宽${R}\n"
     printf "      ${DIM}精品线 QUIC BBR / 廉价线 Brutal，默认 UDP 8443 错开 TCP 443${R}\n"
     printf "  ${GREEN}[4]${R} ${WHITE}纯系统底层内核调优模式${R} ${ORANGE}· 零代理面板${R}\n"
-    printf "      ${DIM}仅部署 BBR / 按内存分档缓冲 / 1GB Swap / MPTCP 防护 / Fail2ban${R}\n\n"
-    read -rp "$(printf "${YELLOW}  请输入方案编号 [1-4] (回车默认 1): ${R}")" MODE
+    printf "      ${DIM}仅部署 BBR / 按内存分档缓冲 / 1GB Swap / MPTCP 防护 / Fail2ban${R}\n"
+    printf "  ${GREEN}[5]${R} ${WHITE}一键回滚系统底层调优${R} ${DIM}· 恢复原厂内核/日志/Swap 快照${R}\n\n"
+    read -rp "$(printf "${YELLOW}  请输入方案编号 [1-5] (回车默认 1): ${R}")" MODE
     MODE="${MODE:-1}"
 fi
 
@@ -190,21 +191,92 @@ case "$MODE" in
         ;;
     4)
         ;;
+    5|rollback)
+        BACKUP_DIR="/var/backups/vps-xray-tuning"
+        echo ""
+        printf "  ${YELLOW}即将撤销本脚本写入的底层内核/日志/Fail2ban/Swap 调优（不影响 3x-ui/Xray/Hy2 节点）。${R}\n"
+        read -rp "确认执行一键回滚还原？[y/N]: " DO_RB
+        if [[ ! "${DO_RB:-n}" =~ ^[Yy]$ ]]; then
+            echo "  已取消回滚。"
+            exit 0
+        fi
+        rm -f /etc/sysctl.d/99-zzz-proxy-tuning.conf /etc/modules-load.d/99-proxy.conf
+        if [ -f "${BACKUP_DIR}/sysctl_orig.conf" ]; then
+            while IFS='=' read -r k v; do
+                [ -n "${k:-}" ] && sysctl -w "$(echo "$k" | xargs)=$(echo "$v" | xargs)" >/dev/null 2>&1 || true
+            done < "${BACKUP_DIR}/sysctl_orig.conf"
+        fi
+        sysctl --system >/dev/null 2>&1 || true
+        if [ -f "${BACKUP_DIR}/journald.conf.bak" ]; then
+            cp -a "${BACKUP_DIR}/journald.conf.bak" /etc/systemd/journald.conf
+            systemctl restart systemd-journald 2>/dev/null || true
+        fi
+        if [ -f "${BACKUP_DIR}/99-nofile.conf.bak" ]; then
+            cp -a "${BACKUP_DIR}/99-nofile.conf.bak" /etc/security/limits.d/99-nofile.conf
+        else
+            rm -f /etc/security/limits.d/99-nofile.conf
+        fi
+        if [ -f "${BACKUP_DIR}/jail.local.bak" ]; then
+            cp -a "${BACKUP_DIR}/jail.local.bak" /etc/fail2ban/jail.local
+            systemctl restart fail2ban 2>/dev/null || true
+        elif [ -f /etc/fail2ban/jail.local ] && [ -f "${BACKUP_DIR}/snapshot.done" ]; then
+            rm -f /etc/fail2ban/jail.local
+            systemctl restart fail2ban 2>/dev/null || true
+        fi
+        if [ -f "${BACKUP_DIR}/swap_created_by_script" ] && [ -f /swapfile ]; then
+            swapoff /swapfile 2>/dev/null || true
+            sed -i '\|/swapfile|d' /etc/fstab
+            rm -f /swapfile "${BACKUP_DIR}/swap_created_by_script"
+        fi
+        echo "  [完成] 已恢复系统底层调优原厂快照 (拥塞控制: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo N/A))"
+        exit 0
+        ;;
     *)
-        echo "[错误] 无效的方案编号: ${MODE}，仅支持 1 / 2 / 3 / 4"
+        echo "[错误] 无效的方案编号: ${MODE}，仅支持 1 / 2 / 3 / 4 / 5"
         exit 1
         ;;
 esac
 
 # ------------------------------------------------------------------------------
-# 阶段一：系统底层优化、Swap 气囊、日志收敛、Fail2ban 与高并发内核栈
+# 阶段一：改前自动原厂快照 + 系统底层优化、Swap 兜底、日志收敛、Fail2ban 与高并发内核栈
 # ------------------------------------------------------------------------------
+BACKUP_DIR="/var/backups/vps-xray-tuning"
+if [ ! -f "${BACKUP_DIR}/snapshot.done" ]; then
+    (
+        umask 077
+        mkdir -p "$BACKUP_DIR"
+        [ -f /etc/systemd/journald.conf ] && cp -a /etc/systemd/journald.conf "${BACKUP_DIR}/journald.conf.bak"
+        [ -f /etc/fail2ban/jail.local ] && cp -a /etc/fail2ban/jail.local "${BACKUP_DIR}/jail.local.bak"
+        [ -f /etc/security/limits.d/99-nofile.conf ] && cp -a /etc/security/limits.d/99-nofile.conf "${BACKUP_DIR}/99-nofile.conf.bak"
+        : > "${BACKUP_DIR}/sysctl_orig.conf"
+        for key in \
+            net.core.default_qdisc net.ipv4.tcp_congestion_control net.mptcp.enabled \
+            net.core.somaxconn net.core.netdev_max_backlog net.ipv4.tcp_max_syn_backlog \
+            net.ipv4.ip_local_port_range net.ipv4.tcp_tw_reuse net.ipv4.tcp_fin_timeout \
+            net.ipv4.tcp_keepalive_time net.ipv4.tcp_keepalive_intvl net.ipv4.tcp_keepalive_probes \
+            net.ipv4.tcp_max_tw_buckets net.ipv4.tcp_slow_start_after_idle net.ipv4.tcp_mtu_probing \
+            net.ipv4.tcp_no_metrics_save net.ipv4.tcp_ecn net.core.rmem_max net.core.wmem_max \
+            net.core.rmem_default net.core.wmem_default net.ipv4.udp_rmem_min net.ipv4.udp_wmem_min \
+            net.ipv4.tcp_rmem net.ipv4.tcp_wmem net.ipv4.tcp_fastopen net.ipv4.tcp_notsent_lowat \
+            net.ipv4.tcp_adv_win_scale net.netfilter.nf_conntrack_max \
+            net.netfilter.nf_conntrack_udp_timeout net.netfilter.nf_conntrack_udp_timeout_stream \
+            net.ipv4.ip_forward fs.file-max vm.swappiness; do
+            val=$(sysctl -n "$key" 2>/dev/null || true)
+            if [ -n "$val" ]; then
+                printf "%s = %s\n" "$key" "$(echo "$val" | tr '\t' ' ' | tr -s ' ')" >> "${BACKUP_DIR}/sysctl_orig.conf"
+            fi
+        done
+        date -u +"%Y-%m-%dT%H:%M:%SZ" > "${BACKUP_DIR}/snapshot.done"
+    )
+    echo "[快照] 已自动保存原厂底层参数快照至 ${BACKUP_DIR}（随时可用模式 5 一键回滚）"
+fi
+
 echo "[1/5] 更新系统组件并安装基础依赖..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y && apt-get upgrade -y
 apt-get install -y curl wget unzip chrony iptables nftables iptables-persistent sqlite3 fail2ban python3 python3-systemd openssl
 
-echo "[2/5] 配置原子钟对时、1GB Swap 气囊、日志限额与 SSH/Fail2ban 加固..."
+echo "[2/5] 配置原子钟对时、1GB Swap 兜底、日志限额与 SSH/Fail2ban 加固..."
 systemctl enable --now chrony
 chronyc makestep || true
 timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
@@ -215,6 +287,7 @@ if [ ! -f /swapfile ]; then
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile || true
+    touch "${BACKUP_DIR}/swap_created_by_script"
 fi
 grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
 if [ -f /swap.img ] && [ "$(stat -c%s /swap.img 2>/dev/null || echo 1073741824)" -lt 943718400 ]; then
