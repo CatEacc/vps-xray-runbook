@@ -494,24 +494,33 @@ else:
 if not any(ob.get('tag') == 'blocked' for ob in outbounds):
     outbounds.append({"protocol": "blackhole", "settings": {}, "tag": "blocked"})
 
-# 若开启一键家宽中转，写入 out-residential (SS-2022)
+# 若开启一键家宽中转，写入按入站隔离的专属出站 (out-res-<tag>)，避免多入站不同家宽互相覆盖
 relay_tag = None
-if enable_relay and res_ip and res_port and res_ss_pass:
-    outbounds = [ob for ob in outbounds if ob.get('tag') != 'out-residential']
-    outbounds.append({
-        "tag": "out-residential",
-        "protocol": "shadowsocks",
-        "settings": {
-            "servers": [{
-                "address": res_ip,
-                "port": int(res_port),
-                "method": "2022-blake3-aes-256-gcm",
-                "password": res_ss_pass
-            }]
-        }
-    })
+if mode == '1' and submode != '3':
+    expected_inb_tag = f"inbound-{port}"
+elif mode == '3':
+    expected_inb_tag = "socks-in-10855"
+else:
+    expected_inb_tag = None
+
+if expected_inb_tag:
+    cand_relay_tag = f"out-res-{expected_inb_tag}"
+    outbounds = [ob for ob in outbounds if ob.get('tag') != cand_relay_tag]
+    if enable_relay and res_ip and res_port and res_ss_pass:
+        outbounds.append({
+            "tag": cand_relay_tag,
+            "protocol": "shadowsocks",
+            "settings": {
+                "servers": [{
+                    "address": res_ip,
+                    "port": int(res_port),
+                    "method": "2022-blake3-aes-256-gcm",
+                    "password": res_ss_pass
+                }]
+            }
+        })
+        relay_tag = cand_relay_tag
     cfg['outbounds'] = outbounds
-    relay_tag = "out-residential"
 
 tables = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
 has_clients_tbl = 'clients' in tables and 'client_inbounds' in tables
@@ -634,7 +643,7 @@ custom_rules = [
     if not (r.get('outboundTag') == 'api' and r.get('inboundTag') == ['api'])
     and not (r.get('outboundTag') == 'blocked' and set(r.get('ip', [])) <= {'geoip:private', 'geoip:cn'} and not r.get('protocol') and not r.get('inboundTag') and not r.get('user'))
     and not (r.get('outboundTag') == 'blocked' and r.get('protocol') == ['bittorrent'] and not r.get('ip') and not r.get('domain'))
-    and not (relay_tag and r.get('outboundTag') == relay_tag and r.get('inboundTag') == [inbound_tag_for_relay])
+    and not (inbound_tag_for_relay and r.get('inboundTag') == [inbound_tag_for_relay] and str(r.get('outboundTag', '')).startswith('out-res'))
 ]
 if relay_tag and inbound_tag_for_relay:
     custom_rules.append({'type': 'field', 'inboundTag': [inbound_tag_for_relay], 'outboundTag': relay_tag})
