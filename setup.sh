@@ -329,7 +329,14 @@ CHKPY
         SSH_PORT_SHOW=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}' || true)
         SSH_PORT_SHOW="${SSH_PORT_SHOW:-22}"
         SERVER_IP="$SERVER_IP" SSH_PORT_SHOW="$SSH_PORT_SHOW" python3 - << 'EXPPY'
-import sqlite3, json, os, subprocess, urllib.parse, base64
+import sqlite3, json, os, subprocess, urllib.parse, base64, shutil
+
+def print_qr(url):
+    if shutil.which('qrencode') and url:
+        try:
+            subprocess.run(['qrencode', '-t', 'ANSIUTF8', '-m', '1', url], check=False)
+        except Exception:
+            pass
 
 server_ip = os.environ.get('SERVER_IP', 'YOUR_SERVER_IP')
 ssh_port = os.environ.get('SSH_PORT_SHOW', '22')
@@ -370,6 +377,7 @@ if os.path.exists(db_path):
                     fl = f"&flow={flow}" if flow else ""
                     link = f"vless://{u}@{server_ip}:{port}?type=tcp&security=reality&pbk={pbk}&fp=chrome&sni={sni}&sid={sid}&spx=%2F{fl}#{r_enc}"
                 print(f"  [{remark}] {link}")
+                print_qr(link)
                 found += 1
             elif sec == 'tls':
                 sni = st.get('tlsSettings', {}).get('serverName', server_ip)
@@ -380,6 +388,7 @@ if os.path.exists(db_path):
                     path = urllib.parse.quote(st.get('wsSettings', {}).get('path', '/'), safe='')
                     link = f"vless://{u}@{sni}:{port}?type={net}&path={path}&host={sni}&security=tls&sni={sni}#{r_enc}"
                 print(f"  [{remark}] {link}")
+                print_qr(link)
                 found += 1
         elif proto == 'shadowsocks':
             method = s.get('method', '')
@@ -414,7 +423,9 @@ if os.path.exists('/etc/hysteria/config.yaml'):
         except Exception:
             pass
     if hy_pass:
-        print(f"  [Hysteria2] hysteria2://{hy_pass}@{server_ip}:{hy_port}?insecure=1&sni=www.bing.com&pinSHA256={pin}&mport=20000-50000#Hysteria2-PortHopping")
+        hy_url = f"hysteria2://{hy_pass}@{server_ip}:{hy_port}?insecure=1&sni=www.bing.com&pinSHA256={pin}&mport=20000-50000#Hysteria2-PortHopping"
+        print(f"  [Hysteria2] {hy_url}")
+        print_qr(hy_url)
         found += 1
 
 if not found:
@@ -480,7 +491,8 @@ fi
 echo "[1/5] 更新系统组件并安装基础依赖..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y && apt-get upgrade -y
-apt-get install -y curl wget unzip chrony iptables nftables iptables-persistent sqlite3 fail2ban python3 python3-systemd openssl
+apt-get install -y curl wget unzip chrony iptables nftables iptables-persistent sqlite3 fail2ban python3 python3-systemd openssl qrencode || \
+  apt-get install -y curl wget unzip chrony iptables nftables iptables-persistent sqlite3 fail2ban python3 python3-systemd openssl
 
 echo "[2/5] 配置原子钟对时、1GB Swap 兜底、日志限额与 SSH/Fail2ban 加固..."
 systemctl enable --now chrony
@@ -1131,7 +1143,12 @@ if [ -f /tmp/setup_result.txt ]; then
     elif grep -q "RESULT_TYPE=LINK" /tmp/setup_result.txt; then
         echo "------------------------------------------------------------------"
         echo "  【客户端导入链接】："
-        grep "^SHARE_LINK=" /tmp/setup_result.txt | cut -d'=' -f2- | sed 's/^/  /'
+        SHARE_URL=$(grep "^SHARE_LINK=" /tmp/setup_result.txt | cut -d'=' -f2-)
+        echo "  ${SHARE_URL}"
+        if command -v qrencode >/dev/null 2>&1 && [ -n "$SHARE_URL" ]; then
+            echo "  【手机扫码导入（Shadowrocket / v2rayNG / Stash）】："
+            qrencode -t ANSIUTF8 -m 1 "$SHARE_URL" || true
+        fi
     fi
     rm -f /tmp/setup_result.txt
 fi
@@ -1139,6 +1156,10 @@ if [ -n "$HY2_LINK" ]; then
     echo "------------------------------------------------------------------"
     echo "  【Hysteria 2 导入链接】："
     echo "  ${HY2_LINK}"
+    if command -v qrencode >/dev/null 2>&1; then
+        echo "  【手机扫码导入（Shadowrocket / v2rayNG / Stash）】："
+        qrencode -t ANSIUTF8 -m 1 "$HY2_LINK" || true
+    fi
 fi
 echo -e "${CYAN}══════════════════════════════════════════════════════════════════"
 echo -e "  本脚本由 猫e/acc (CatEacc) 维护提供"
