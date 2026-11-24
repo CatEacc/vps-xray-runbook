@@ -151,21 +151,21 @@ case "$MODE" in
             echo "  请选择 REALITY 回落目标域名 (SNI)："
             echo "    1) 本机自动测速优选最佳 SNI（★ 推荐：1 秒并发实测 TLS 1.3 + H2 + 最低延迟）"
             echo "    2) addons.mozilla.org      （免测默认：纯海外无国内 CDN）"
-            echo "    3) dl.google.com           （RPRX 官方示例：支持握手加密）"
-            echo "    4) 手动输入自定义域名      （输入后自动 1 秒体检 TLS 1.3 + H2）"
+            echo "    3) www.gentoo.org          （免测默认：纯海外非 CF，实测国内直连可达）"
+            echo "    4) 手动输入自定义域名      （自动体检 TLS 1.3+H2 / 非 CF / 国内 CDN / 是否被墙）"
             read -rp "  请输入选项 [1-4] (回车默认 1): " SNI_OPT
             case "${SNI_OPT:-1}" in
                 1)
                     if command -v python3 >/dev/null 2>&1; then
                         VPS_CC=$( (curl -fsSm 2 https://ipinfo.io/country 2>/dev/null || curl -fsSm 2 https://ifconfig.co/country-iso 2>/dev/null || true) | tr -dc 'A-Za-z' | tr '[:lower:]' '[:upper:]' | head -c 2 )
-                        echo "  -> 正在从本机并发实测非 CF 纯海外 TLS 1.3 + H2 目标站 (机房地区: ${VPS_CC:-AUTO})..."
+                        echo "  -> 正在从本机并发实测非 CF / 无国内 CDN 纯海外 TLS 1.3 + H2 目标站 (机房地区: ${VPS_CC:-AUTO})..."
                         SNI_LIST=$(VPS_CC="$VPS_CC" python3 - << 'SNIPY'
 import os, ssl, socket, time
 from concurrent.futures import ThreadPoolExecutor
 CANDIDATES = [
-    "addons.mozilla.org", "dl.google.com", "www.debian.org", "www.kernel.org",
-    "www.postgresql.org", "www.python.org", "www.gentoo.org", "www.hetzner.com",
-    "www.oracle.com"
+    "addons.mozilla.org", "www.debian.org", "www.kernel.org", "www.postgresql.org",
+    "www.python.org", "www.gentoo.org", "www.hetzner.com", "www.oracle.com",
+    "www.cisco.com", "aws.amazon.com"
 ]
 if os.environ.get("VPS_CC", "") in ("JP", "HK", "SG", "TW", "KR"):
     CANDIDATES += ["www.sony.jp", "www.yahoo.co.jp", "www.lovelive-anime.jp"]
@@ -214,13 +214,14 @@ SNIPY
                     fi
                     ;;
                 2) REALITY_SNI="addons.mozilla.org" ;;
-                3) REALITY_SNI="dl.google.com" ;;
+                3) REALITY_SNI="www.gentoo.org" ;;
                 4)
                     read -rp "  -> 请输入自定义目标域名 (如 www.example.com): " SNI_CUSTOM
                     REALITY_SNI="${SNI_CUSTOM:-addons.mozilla.org}"
                     if command -v python3 >/dev/null 2>&1; then
+                        echo "  -> 正在执行四重体检 (TLS 1.3+H2 / 非 CF / 国内 CDN / 中国大陆连通性)..."
                         SNI_CHK=$(SNI_TEST="$REALITY_SNI" python3 - << 'CHKPY'
-import os, ssl, socket, time, http.client
+import os, ssl, socket, time, json, http.client, urllib.request
 h = os.environ["SNI_TEST"].strip()
 ctx = ssl.create_default_context()
 ctx.set_alpn_protocols(["h2", "http/1.1"])
@@ -238,10 +239,54 @@ try:
         is_cf = ('cf-ray' in hdrs) or ('cloudflare' in hdrs.get('server', '').lower())
     except Exception:
         pass
+    cn_note = "国内探针暂跳过"
+    cn_warn = ""
+    try:
+        payload = json.dumps({
+            "type": "http", "target": h, "locations": [{"country": "CN"}], "limit": 2,
+            "measurementOptions": {"protocol": "HTTPS", "request": {"method": "HEAD", "path": "/"}}
+        }).encode()
+        req = urllib.request.Request("https://api.globalping.io/v1/measurements", data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "CatEacc-SNI-Check/1.0"})
+        mid = json.loads(urllib.request.urlopen(req, timeout=5).read().decode()).get("id")
+        if mid:
+            finished = None
+            for _ in range(12):
+                time.sleep(1.0)
+                r = json.loads(urllib.request.urlopen(f"https://api.globalping.io/v1/measurements/{mid}", timeout=5).read().decode())
+                if r.get("status") == "finished":
+                    finished = r.get("results", [])
+                    break
+            if finished is None:
+                cn_warn = "中国大陆探针超时未响应，疑似已被 GFW 阻断或国内无法访问！"
+            elif finished:
+                ok_cnt, cn_cdn_ip = 0, ""
+                for item in finished:
+                    rr = item.get("result", {})
+                    if rr.get("status") == "finished" and rr.get("statusCode"):
+                        ok_cnt += 1
+                    rip = rr.get("resolvedAddress", "")
+                    if rip and not cn_cdn_ip:
+                        try:
+                            cc = urllib.request.urlopen(f"https://ipinfo.io/{rip}/country", timeout=2.5).read().decode().strip()
+                            if cc == "CN":
+                                cn_cdn_ip = rip
+                        except Exception:
+                            pass
+                if cn_cdn_ip:
+                    cn_warn = f"中国大陆解析到境内 IP ({cn_cdn_ip})，存在国内 CDN，严禁用于 REALITY！"
+                elif ok_cnt == 0:
+                    cn_warn = f"中国大陆探针 0/{len(finished)} 可达，疑似已被 GFW 阻断或 SNI 封锁！"
+                else:
+                    cn_note = f"国内直连可达 {ok_cnt}/{len(finished)} | 无境内 CDN"
+    except Exception:
+        pass
     if is_cf:
         print(f"WARN|背后套了 Cloudflare CDN，易被扫作免费 CF 反代 IP ({ver}+{alpn}, {rtt:.1f} ms)")
+    elif cn_warn:
+        print(f"WARN|{cn_warn} ({ver}+{alpn}, {rtt:.1f} ms)")
     elif ver == "TLSv1.3" and alpn == "h2":
-        print(f"OK|{ver} + {alpn} | 非 CF ({rtt:.1f} ms)")
+        print(f"OK|{ver} + {alpn} | 非 CF | {cn_note} ({rtt:.1f} ms)")
     else:
         print(f"WARN|{ver} / ALPN={alpn}")
 except Exception as e:
@@ -251,7 +296,7 @@ CHKPY
                         if [[ "$SNI_CHK" == OK\|* ]]; then
                             echo "  -> [体检通过] ${REALITY_SNI}: ${SNI_CHK#OK|}"
                         else
-                            echo "  -> [体检警告] ${REALITY_SNI} 未满足 TLS 1.3 + h2 (${SNI_CHK#WARN|})"
+                            echo "  -> [体检警告] ${REALITY_SNI}: ${SNI_CHK#WARN|}"
                         fi
                     fi
                     ;;
