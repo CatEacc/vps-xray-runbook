@@ -148,16 +148,99 @@ case "$MODE" in
             read -rp "请输入 REALITY 监听端口 (回车默认 443，也可手动输入如 8443): " LISTEN_PORT
             LISTEN_PORT="${LISTEN_PORT:-443}"
             echo "  请选择 REALITY 回落目标域名 (SNI)："
-            echo "    1) addons.mozilla.org （推荐：纯海外无国内CDN、TLS 1.3 + H2）"
-            echo "    2) dl.google.com      （RPRX 官方示例：支持握手加密）"
-            echo "    3) 手动输入自定义域名 （生产建议用 RealiTLScanner 扫同机房冷门站）"
-            read -rp "  请输入选项 [1-3] (回车默认 1): " SNI_OPT
+            echo "    1) 本机自动测速优选最佳 SNI（★ 推荐：1 秒并发实测 TLS 1.3 + H2 + 最低延迟）"
+            echo "    2) addons.mozilla.org      （免测默认：纯海外无国内 CDN）"
+            echo "    3) dl.google.com           （RPRX 官方示例：支持握手加密）"
+            echo "    4) 手动输入自定义域名      （输入后自动 1 秒体检 TLS 1.3 + H2）"
+            read -rp "  请输入选项 [1-4] (回车默认 1): " SNI_OPT
             case "${SNI_OPT:-1}" in
-                1) REALITY_SNI="addons.mozilla.org" ;;
-                2) REALITY_SNI="dl.google.com" ;;
-                3)
+                1)
+                    if command -v python3 >/dev/null 2>&1; then
+                        echo "  -> 正在从本机并发实测 16 个纯海外 TLS 1.3 + H2 目标站..."
+                        SNI_LIST=$(python3 - << 'SNIPY'
+import ssl, socket, time
+from concurrent.futures import ThreadPoolExecutor
+CANDIDATES = [
+    "addons.mozilla.org", "dl.google.com", "www.cloudflare.com", "pkg.cloudflare.com",
+    "www.debian.org", "www.hetzner.com", "www.digitalocean.com", "www.linode.com",
+    "www.vultr.com", "www.amd.com", "www.nvidia.com", "www.oracle.com",
+    "www.redhat.com", "www.sony.jp", "www.nintendo.co.jp", "www.lovelive-anime.jp"
+]
+def probe(host):
+    ctx = ssl.create_default_context()
+    ctx.set_alpn_protocols(["h2", "http/1.1"])
+    t0 = time.monotonic()
+    try:
+        with socket.create_connection((host, 443), timeout=2.5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ss:
+                if ss.version() == "TLSv1.3" and ss.selected_alpn_protocol() == "h2":
+                    return ((time.monotonic() - t0) * 1000, host)
+    except Exception:
+        pass
+    return None
+with ThreadPoolExecutor(max_workers=16) as ex:
+    res = sorted([r for r in ex.map(probe, CANDIDATES) if r])
+for rtt, host in res[:5]:
+    print(f"{host}|{rtt:.1f}")
+SNIPY
+)
+                        if [ -n "$SNI_LIST" ]; then
+                            idx=1
+                            SNI_ARR=()
+                            while IFS='|' read -r h rtt; do
+                                [ -z "$h" ] && continue
+                                SNI_ARR+=("$h")
+                                printf "     %d) %-24s (%s ms | TLSv1.3 + h2)\n" "$idx" "$h" "$rtt"
+                                idx=$((idx + 1))
+                            done <<< "$SNI_LIST"
+                            read -rp "  -> 请选择编号 [1-${#SNI_ARR[@]}] (回车默认 1): " PICK_IDX
+                            PICK_IDX="${PICK_IDX:-1}"
+                            if [[ "$PICK_IDX" =~ ^[0-9]+$ ]] && [ "$PICK_IDX" -ge 1 ] && [ "$PICK_IDX" -le "${#SNI_ARR[@]}" ]; then
+                                REALITY_SNI="${SNI_ARR[$((PICK_IDX - 1))]}"
+                            else
+                                REALITY_SNI="${SNI_ARR[0]}"
+                            fi
+                            echo "  -> 已选定本机最优 SNI: ${REALITY_SNI}"
+                        else
+                            echo "  -> [提示] 测速未命中可用站点，自动回退 addons.mozilla.org"
+                            REALITY_SNI="addons.mozilla.org"
+                        fi
+                    else
+                        echo "  -> [提示] 当前环境尚未安装 python3，自动回退 addons.mozilla.org"
+                        REALITY_SNI="addons.mozilla.org"
+                    fi
+                    ;;
+                2) REALITY_SNI="addons.mozilla.org" ;;
+                3) REALITY_SNI="dl.google.com" ;;
+                4)
                     read -rp "  -> 请输入自定义目标域名 (如 www.example.com): " SNI_CUSTOM
                     REALITY_SNI="${SNI_CUSTOM:-addons.mozilla.org}"
+                    if command -v python3 >/dev/null 2>&1; then
+                        SNI_CHK=$(SNI_TEST="$REALITY_SNI" python3 - << 'CHKPY'
+import os, ssl, socket, time
+h = os.environ["SNI_TEST"].strip()
+ctx = ssl.create_default_context()
+ctx.set_alpn_protocols(["h2", "http/1.1"])
+t0 = time.monotonic()
+try:
+    with socket.create_connection((h, 443), timeout=3.0) as sock:
+        with ctx.wrap_socket(sock, server_hostname=h) as ss:
+            rtt = (time.monotonic() - t0) * 1000
+            ver, alpn = ss.version(), ss.selected_alpn_protocol()
+            if ver == "TLSv1.3" and alpn == "h2":
+                print(f"OK|{ver} + {alpn} ({rtt:.1f} ms)")
+            else:
+                print(f"WARN|{ver} / ALPN={alpn}")
+except Exception as e:
+    print(f"WARN|{e}")
+CHKPY
+)
+                        if [[ "$SNI_CHK" == OK\|* ]]; then
+                            echo "  -> [体检通过] ${REALITY_SNI}: ${SNI_CHK#OK|}"
+                        else
+                            echo "  -> [体检警告] ${REALITY_SNI} 未满足 TLS 1.3 + h2 (${SNI_CHK#WARN|})"
+                        fi
+                    fi
                     ;;
                 *) REALITY_SNI="addons.mozilla.org" ;;
             esac
