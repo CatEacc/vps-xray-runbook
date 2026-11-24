@@ -40,9 +40,13 @@ GREEN="${ESC}[38;5;46m"
 YELLOW="${ESC}[38;5;220m"
 ORANGE="${ESC}[38;5;208m"
 PINK="${ESC}[38;5;205m"
+RED="${ESC}[38;5;196m"
 WHITE="${ESC}[1;97m"
 DIM="${ESC}[38;5;245m"
 NC="${R}"
+
+SCRIPT_VER=$(curl -fsSm 2 https://api.github.com/repos/CatEacc/vps-xray-runbook/releases/latest 2>/dev/null | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n 1 | cut -d'"' -f4 || true)
+SCRIPT_VER="${SCRIPT_VER:-v1.2.3}"
 
 print_cateacc_logo() {
     G1="${ESC}[38;5;46m"
@@ -94,7 +98,7 @@ if [ -z "$MODE" ]; then
     printf '\n'
     print_cateacc_logo
     printf '\n'
-    printf "  ${CYAN}猫e/acc (CatEacc)${R} ${DIM}· VPS 生产级部署与调优脚本 ${YELLOW}v1.0${R}\n"
+    printf "  ${CYAN}猫e/acc (CatEacc)${R} ${DIM}· VPS 生产级部署与调优脚本 ${YELLOW}${SCRIPT_VER}${R}\n"
     printf "  ${GREEN}──────────────────────────────────────────────────────────${R}\n"
     printf "  ${SKY}OS:${R}       ${GREEN}${OS_INFO} (${ARCH_INFO})${R}\n"
     printf "  ${SKY}Kernel:${R}   ${GREEN}${KERNEL_INFO}${R}  ${DIM}|${R}  ${SKY}BBR:${R} ${GREEN}${BBR_STAT}${R}  ${DIM}|${R}  ${SKY}MPTCP:${R} ${GREEN}${MPTCP_STAT}${R}\n"
@@ -135,7 +139,7 @@ verify_reality_sni() {
     if ! command -v python3 >/dev/null 2>&1; then
         return 0
     fi
-    echo "  -> 正在对 ${target_sni} 执行实时四重复检 (TLS 1.3+H2 / 非 CF / 无国内 CDN / 中国大陆可达)..."
+    printf "  ${SKY}-> 正在对 ${WHITE}%s${SKY} 执行实时四重复检 (TLS 1.3+H2 / 非 CF / 无国内 CDN / 中国大陆可达)...${R}\n" "$target_sni"
     local chk_out
     chk_out=$(SNI_TEST="$target_sni" python3 - << 'CHKPY'
 import os, ssl, socket, time, json, http.client, urllib.request
@@ -211,43 +215,120 @@ except Exception as e:
 CHKPY
 )
     if [[ "$chk_out" == OK\|* ]]; then
-        echo "  -> [实时复检通过] ${target_sni}: ${chk_out#OK|}"
+        printf "  ${GREEN}-> [实时复检通过]${R} ${WHITE}%s${R}: ${GREEN}%s${R}\n" "$target_sni" "${chk_out#OK|}"
     else
-        echo "  -> [实时复检警告] ${target_sni}: ${chk_out#WARN|}"
+        printf "  ${RED}-> [实时复检警告]${R} ${WHITE}%s${R}: ${ORANGE}%s${R}\n" "$target_sni" "${chk_out#WARN|}"
     fi
+}
+
+prompt_relay_target() {
+    printf "\n  ${CYAN}─── 后端家宽中转对接方式 ───${R}\n"
+    printf "  ${GREEN}[1]${R} ${WHITE}粘贴 ss:// 分享链接${R} ${DIM}(自动解析 IP/端口/密钥，也支持直接输入 IP 手填)${R}\n"
+    printf "  ${GREEN}[2]${R} ${WHITE}全自动远程部署家宽机并对接${R} ${PINK}★ 终极懒人版 · 填 SSH 账密自动装好并拉回凭据${R}\n"
+    read -rp "$(printf "  ${YELLOW}请选择对接方式 [1-2] (回车默认 1): ${R}")" RELAY_MODE
+    RELAY_MODE="${RELAY_MODE:-1}"
+
+    if [ "$RELAY_MODE" = "2" ]; then
+        read -rp "$(printf "  ${SKY}-> 后端家宽机 SSH IP: ${R}")" RES_SSH_IP
+        read -rp "$(printf "  ${SKY}-> 后端家宽机 SSH 端口 (回车默认 22): ${R}")" RES_SSH_PORT
+        RES_SSH_PORT="${RES_SSH_PORT:-22}"
+        read -rsp "$(printf "  ${SKY}-> 后端家宽机 root 密码 (输入不回显，仅内存生效不落盘): ${R}")" RES_SSH_PASS
+        echo ""
+        if [ -n "$RES_SSH_IP" ] && [ -n "$RES_SSH_PASS" ]; then
+            if ! command -v sshpass >/dev/null 2>&1; then
+                printf "  ${DIM}-> 正在安装 sshpass 以进行自动化对接...${R}\n"
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update -qq && apt-get install -y -qq sshpass >/dev/null 2>&1 || true
+            fi
+            printf "  ${CYAN}-> 正在连接家宽机 %s:%s 自动部署 SS-2022 落地并添加本机白名单 (%s)...${R}\n" "$RES_SSH_IP" "$RES_SSH_PORT" "$SERVER_IP"
+            local remote_out=""
+            if command -v sshpass >/dev/null 2>&1; then
+                remote_out=$(SSHPASS="$RES_SSH_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p "$RES_SSH_PORT" "root@${RES_SSH_IP}" \
+                    "curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/setup.sh -o /tmp/_res_setup.sh && printf '3\n\n%s\n' '${SERVER_IP}' | bash /tmp/_res_setup.sh 1; rm -f /tmp/_res_setup.sh" 2>&1 || true)
+            fi
+            unset RES_SSH_PASS SSHPASS
+            RES_IP=$(printf "%s\n" "$remote_out" | grep -oE 'SS_IP=[^[:space:]]+' | tail -n 1 | cut -d'=' -f2- || true)
+            RES_PORT=$(printf "%s\n" "$remote_out" | grep -oE 'SS_PORT=[0-9]+' | tail -n 1 | cut -d'=' -f2- || true)
+            RES_SS_PASS=$(printf "%s\n" "$remote_out" | grep -oE 'SS_PASS=[^[:space:]]+' | tail -n 1 | cut -d'=' -f2- || true)
+            if [ -n "$RES_IP" ] && [ -n "$RES_PORT" ] && [ -n "$RES_SS_PASS" ]; then
+                printf "  ${GREEN}-> [自动对接成功]${R} 家宽落地已就绪: ${CYAN}%s:%s${R} (已自动白名单放行本机 IP)\n" "$RES_IP" "$RES_PORT"
+                return 0
+            else
+                printf "  ${ORANGE}-> [提示] 远程自动部署未能获取凭据（请检查密码/网络），自动切换为方式 1 手动粘贴：${R}\n"
+            fi
+        else
+            unset RES_SSH_PASS SSHPASS
+            printf "  ${ORANGE}-> [提示] IP 或密码为空，自动切换为方式 1：${R}\n"
+        fi
+    fi
+
+    read -rp "$(printf "  ${YELLOW}-> 请粘贴家宽 ss:// 链接，或直接输入家宽机 IP: ${R}")" SS_OR_IP
+    if [[ "$SS_OR_IP" == ss://* ]]; then
+        local parsed
+        parsed=$(SS_URI="$SS_OR_IP" python3 - << 'SSPY'
+import os, base64, urllib.parse
+u = os.environ.get("SS_URI", "").strip()
+u = u[5:].split("#", 1)[0].split("?", 1)[0]
+if "@" in u:
+    cred, hp = u.rsplit("@", 1)
+    cred = urllib.parse.unquote(cred)
+    if ":" not in cred:
+        pad = "=" * ((4 - len(cred) % 4) % 4)
+        try:
+            cred = base64.urlsafe_b64decode(cred + pad).decode("utf-8", "ignore")
+        except Exception:
+            cred = base64.b64decode(cred + pad).decode("utf-8", "ignore")
+    pwd = cred.split(":", 1)[1] if ":" in cred else cred
+    host, port = hp.rsplit(":", 1)
+    print(f"{host.strip('[]')}|{port.strip()}|{pwd.strip()}")
+SSPY
+)
+        if [ -n "$parsed" ]; then
+            IFS='|' read -r RES_IP RES_PORT RES_SS_PASS <<< "$parsed"
+            printf "  ${GREEN}-> [解析成功]${R} 目标家宽: ${CYAN}%s:%s${R} ${DIM}(密钥已自动提取)${R}\n" "$RES_IP" "$RES_PORT"
+            return 0
+        else
+            printf "  ${ORANGE}-> [提示] ss:// 链接解析失败，请改为分步输入：${R}\n"
+            read -rp "$(printf "  ${SKY}-> 请输入后端家宽机 IP: ${R}")" RES_IP
+        fi
+    else
+        RES_IP="$SS_OR_IP"
+    fi
+    read -rp "$(printf "  ${SKY}-> 请输入后端家宽机 SS-2022 端口: ${R}")" RES_PORT
+    read -rp "$(printf "  ${SKY}-> 请输入后端家宽机 SS-2022 密钥 (Base64): ${R}")" RES_SS_PASS
 }
 
 case "$MODE" in
     1)
         echo ""
-        echo "  --- 方案 1 子模式选择 ---"
-        echo "  1) VLESS + XHTTP + REALITY（RPRX 最新 H2/XMUX，适合新版 v2rayN/v2rayNG）"
-        echo "  2) VLESS + raw + REALITY + Vision（全客户端通吃，极低延迟）"
-        echo "  3) 设为【海外住宅家宽落地机】（随机高位端口 SS-2022，供优化机一键中转）"
-        read -rp "请选择子模式 [1-3] (默认 1): " REALITY_SUBMODE
+        printf "  ${CYAN}─── 方案 1 子模式选择 ───${R}\n"
+        printf "  ${GREEN}[1]${R} ${WHITE}VLESS + XHTTP + REALITY${R} ${DIM}（RPRX 最新 H2/XMUX，适合新版 v2rayN/v2rayNG）${R}\n"
+        printf "  ${GREEN}[2]${R} ${WHITE}VLESS + raw + REALITY + Vision${R} ${CYAN}（全客户端通吃，极低延迟）${R}\n"
+        printf "  ${GREEN}[3]${R} ${WHITE}设为【海外住宅家宽落地机】${R} ${PINK}（随机高位端口 SS-2022，供优化机一键中转）${R}\n"
+        read -rp "$(printf "  ${YELLOW}请选择子模式 [1-3] (回车默认 1): ${R}")" REALITY_SUBMODE
         REALITY_SUBMODE="${REALITY_SUBMODE:-1}"
 
         if [ "$REALITY_SUBMODE" = "3" ]; then
             DEF_PORT=$((20000 + RANDOM % 30000))
-            read -rp "请输入家宽落地 SS-2022 监听端口 (回车默认随机高位端口 ${DEF_PORT}): " LISTEN_PORT
+            read -rp "$(printf "  ${YELLOW}请输入家宽落地 SS-2022 监听端口 (回车默认随机高位端口 ${CYAN}${DEF_PORT}${YELLOW}): ${R}")" LISTEN_PORT
             LISTEN_PORT="${LISTEN_PORT:-$DEF_PORT}"
-            read -rp "请输入允许连入的前置优化机 IP（留空则不设白名单，多个用逗号分隔）: " RES_WHITELIST_IP
+            read -rp "$(printf "  ${YELLOW}请输入允许连入的前置优化机 IP（留空则不设白名单，多个用逗号分隔）: ${R}")" RES_WHITELIST_IP
         else
-            read -rp "请输入 REALITY 监听端口 (回车默认 443，也可手动输入如 8443): " LISTEN_PORT
+            read -rp "$(printf "  ${YELLOW}请输入 REALITY 监听端口 (回车默认 443，也可手动输入如 8443): ${R}")" LISTEN_PORT
             LISTEN_PORT="${LISTEN_PORT:-443}"
-            echo "  请选择 REALITY 回落目标域名 (SNI)："
-            echo "    1) 按机房地区自动测速优选（★ 推荐：本土 5 站 + 全球兜底池 + 选后自动实时复检）"
-            echo "    2) addons.mozilla.org      （免测默认：Firefox 扩展商店 · 纯海外无国内 CDN）"
-            echo "    3) www.gentoo.org          （免测默认：Gentoo Linux 官网 · 非 CF 国内直连可达）"
-            echo "    4) 手动输入自定义域名      （自动四重体检 TLS 1.3+H2 / 非 CF / 国内 CDN / 是否被墙）"
-            read -rp "  请输入选项 [1-4] (回车默认 1): " SNI_OPT
+            printf "\n  ${CYAN}─── 请选择 REALITY 回落目标域名 (SNI) ───${R}\n"
+            printf "  ${GREEN}[1]${R} ${WHITE}按机房地区自动测速优选${R} ${ORANGE}★ 推荐：本土 5 站 + 全球兜底池 + 选后自动实时复检${R}\n"
+            printf "  ${GREEN}[2]${R} ${WHITE}addons.mozilla.org${R}     ${DIM}（免测默认：Firefox 扩展商店 · 纯海外无国内 CDN）${R}\n"
+            printf "  ${GREEN}[3]${R} ${WHITE}www.gentoo.org${R}         ${DIM}（免测默认：Gentoo Linux 官网 · 非 CF 国内直连可达）${R}\n"
+            printf "  ${GREEN}[4]${R} ${WHITE}手动输入自定义域名${R}     ${DIM}（自动四重体检 TLS 1.3+H2 / 非 CF / 国内 CDN / 是否被墙）${R}\n"
+            read -rp "$(printf "  ${YELLOW}请输入选项 [1-4] (回车默认 1): ${R}")" SNI_OPT
             case "${SNI_OPT:-1}" in
                 1)
                     if command -v python3 >/dev/null 2>&1; then
                         VPS_CC=$( (curl -fsSm 2 https://ipinfo.io/country 2>/dev/null || curl -fsSm 2 https://ifconfig.co/country-iso 2>/dev/null || true) | tr -dc 'A-Za-z' | tr '[:lower:]' '[:upper:]' | head -c 2 )
                         echo ""
-                        echo "  [说明] REALITY 选站铁律：纯海外、TLSv1.3+H2、非 CF、无国内 CDN、国内直连可达，同地区低延迟更自然。"
-                        echo "  -> 正在并发测速当前地区 (${VPS_CC:-GLOBAL}) 本土站 + 全球通用兜底池..."
+                        printf "  ${YELLOW}[说明]${R} ${DIM}REALITY 选站铁律：纯海外、TLSv1.3+H2、非 CF、无国内 CDN、国内直连可达，同地区低延迟更自然。${R}\n"
+                        printf "  ${SKY}-> 正在并发测速当前地区 (${CYAN}${VPS_CC:-GLOBAL}${SKY}) 本土站 + 全球通用兜底池...${R}\n"
                         SNI_LIST=$(VPS_CC="$VPS_CC" python3 - << 'SNIPY'
 import os, ssl, socket, time
 from concurrent.futures import ThreadPoolExecutor
@@ -371,67 +452,63 @@ SNIPY
                                 [ -z "$tag" ] && continue
                                 if [ "$tag" = "HDR" ]; then
                                     echo ""
-                                    echo "  【${f1}】"
+                                    printf "  ${SKY}【%s】${R}\n" "$f1"
                                 elif [ "$tag" = "ITEM" ]; then
                                     SNI_ARR+=("$f1")
-                                    printf "    %2d) %-23s (%6s ms | %s)\n" "$idx" "$f1" "$f2" "$f3"
+                                    printf "    ${GREEN}%2d)${R} ${WHITE}%-23s${R} ${DIM}(${YELLOW}%6s ms${DIM} | ${CYAN}%s${DIM})${R}\n" "$idx" "$f1" "$f2" "$f3"
                                     idx=$((idx + 1))
                                 fi
                             done <<< "$SNI_LIST"
                             echo ""
-                            read -rp "  -> 请选择编号 [1-${#SNI_ARR[@]}] (回车默认 1): " PICK_IDX
+                            read -rp "$(printf "  ${YELLOW}-> 请选择编号 [1-${#SNI_ARR[@]}] (回车默认 1): ${R}")" PICK_IDX
                             PICK_IDX="${PICK_IDX:-1}"
                             if [[ "$PICK_IDX" =~ ^[0-9]+$ ]] && [ "$PICK_IDX" -ge 1 ] && [ "$PICK_IDX" -le "${#SNI_ARR[@]}" ]; then
                                 REALITY_SNI="${SNI_ARR[$((PICK_IDX - 1))]}"
                             else
                                 REALITY_SNI="${SNI_ARR[0]}"
                             fi
-                            echo "  -> 已选定目标 SNI: ${REALITY_SNI}"
+                            printf "  ${ORANGE}-> 已选定目标 SNI: ${WHITE}%s${R}\n" "$REALITY_SNI"
                             verify_reality_sni "$REALITY_SNI"
                         else
-                            echo "  -> [提示] 测速未命中可用站点，自动回退 addons.mozilla.org"
+                            printf "  ${ORANGE}-> [提示] 测速未命中可用站点，自动回退 addons.mozilla.org${R}\n"
                             REALITY_SNI="addons.mozilla.org"
                         fi
                     else
-                        echo "  -> [提示] 当前环境尚未安装 python3，自动回退 addons.mozilla.org"
+                        printf "  ${ORANGE}-> [提示] 当前环境尚未安装 python3，自动回退 addons.mozilla.org${R}\n"
                         REALITY_SNI="addons.mozilla.org"
                     fi
                     ;;
                 2) REALITY_SNI="addons.mozilla.org" ;;
                 3) REALITY_SNI="www.gentoo.org" ;;
                 4)
-                    read -rp "  -> 请输入自定义目标域名 (如 www.example.com): " SNI_CUSTOM
+                    read -rp "$(printf "  ${YELLOW}-> 请输入自定义目标域名 (如 www.example.com): ${R}")" SNI_CUSTOM
                     REALITY_SNI="${SNI_CUSTOM:-addons.mozilla.org}"
                     verify_reality_sni "$REALITY_SNI"
                     ;;
                 *) REALITY_SNI="addons.mozilla.org" ;;
             esac
-            read -rp "是否一键中转到后端海外家宽机？[y/N]: " ENABLE_RELAY
+            read -rp "$(printf "  ${YELLOW}是否一键中转到后端海外家宽机？[y/N]: ${R}")" ENABLE_RELAY
             ENABLE_RELAY="${ENABLE_RELAY:-n}"
             if [[ "$ENABLE_RELAY" =~ ^[Yy]$ ]]; then
-                read -rp "  -> 请输入后端家宽机 IP: " RES_IP
-                read -rp "  -> 请输入后端家宽机 SS-2022 端口: " RES_PORT
-                read -rp "  -> 请输入后端家宽机 SS-2022 密钥 (Base64): " RES_SS_PASS
+                prompt_relay_target
             fi
         fi
         ;;
     2)
-        read -rp "请输入 Cloudflare 回源端口 (回车默认 2053，支持 443/2053/2083/8443): " LISTEN_PORT
+        read -rp "$(printf "  ${YELLOW}请输入 Cloudflare 回源端口 (回车默认 2053，支持 443/2053/2083/8443): ${R}")" LISTEN_PORT
         LISTEN_PORT="${LISTEN_PORT:-2053}"
-        read -rp "请输入 Cloudflare CDN 域名 (如 cf.example.com): " CF_IN
+        read -rp "$(printf "  ${YELLOW}请输入 Cloudflare CDN 域名 (如 cf.example.com): ${R}")" CF_IN
         CF_DOMAIN="${CF_IN:-cf.example.com}"
         ;;
     3)
-        read -rp "请输入 Hysteria 2 本地 UDP 监听端口 (回车默认 8443 以错开 TCP 443，也可填 443): " LISTEN_PORT
+        read -rp "$(printf "  ${YELLOW}请输入 Hysteria 2 本地 UDP 监听端口 (回车默认 8443 以错开 TCP 443，也可填 443): ${R}")" LISTEN_PORT
         LISTEN_PORT="${LISTEN_PORT:-8443}"
-        read -rp "是否为廉价高丢包线路开启 Brutal？(CN2/9929 精品线强烈选 n) [y/N]: " HY2_BRUTAL
+        read -rp "$(printf "  ${YELLOW}是否为廉价高丢包线路开启 Brutal？(CN2/9929 精品线强烈选 n) [y/N]: ${R}")" HY2_BRUTAL
         HY2_BRUTAL="${HY2_BRUTAL:-n}"
-        read -rp "是否一键中转到后端海外家宽机？[y/N]: " ENABLE_RELAY
+        read -rp "$(printf "  ${YELLOW}是否一键中转到后端海外家宽机？[y/N]: ${R}")" ENABLE_RELAY
         ENABLE_RELAY="${ENABLE_RELAY:-n}"
         if [[ "$ENABLE_RELAY" =~ ^[Yy]$ ]]; then
-            read -rp "  -> 请输入后端家宽机 IP: " RES_IP
-            read -rp "  -> 请输入后端家宽机 SS-2022 端口: " RES_PORT
-            read -rp "  -> 请输入后端家宽机 SS-2022 密钥 (Base64): " RES_SS_PASS
+            prompt_relay_target
         fi
         ;;
     4)
@@ -1277,6 +1354,10 @@ systemctl restart x-ui
 PANEL_PORT=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webPort' LIMIT 1\").fetchone(); print(r[0].strip() if r and r[0] else '54321')" 2>/dev/null | tr -dc '0-9' || true)
 PANEL_PATH=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webBasePath' LIMIT 1\").fetchone(); print(r[0].strip().strip('/') if r and r[0] else '')" 2>/dev/null || true)
 PANEL_SCHEME=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webCertFile' LIMIT 1\").fetchone(); print('https' if r and r[0] and r[0].strip() else 'http')" 2>/dev/null || echo "http")
+SSH_PORT_NOW=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}' || true)
+SSH_PORT_NOW="${SSH_PORT_NOW:-22}"
+SSH_P_FLAG=""
+[ "$SSH_PORT_NOW" != "22" ] && SSH_P_FLAG="-p ${SSH_PORT_NOW} "
 
 echo ""
 echo "=================================================================="
@@ -1286,7 +1367,7 @@ echo "  - x-ui          : $(systemctl is-active x-ui 2>/dev/null || true)"
 echo "  - Xray 内核     : $($XRAY_BIN version | head -n 1)"
 echo "------------------------------------------------------------------"
 echo "  3x-ui 面板已锁定 127.0.0.1:${PANEL_PORT}，本地 SSH 隧道访问命令："
-echo "  ssh -L ${PANEL_PORT}:127.0.0.1:${PANEL_PORT} root@${SERVER_IP}"
+echo "  ssh ${SSH_P_FLAG}-L ${PANEL_PORT}:127.0.0.1:${PANEL_PORT} root@${SERVER_IP}"
 echo "  本地浏览器打开: ${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 if [ -f /tmp/setup_result.txt ]; then
     if grep -q "RESULT_TYPE=RESIDENTIAL_SS" /tmp/setup_result.txt; then
