@@ -22,6 +22,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 
 * **方案 1：`VLESS + REALITY`（支持一键中转家宽）**
   * 支持 RPRX 最新 **`XHTTP + REALITY`** 与全客户端通吃的 **`raw + REALITY + xtls-rprx-vision`**，端口回车默认 `443`（也可手填如 `8443` / 高位端口）；
+  * 内置 **9 大地区 100% 纯本土 X25519 SNI 自动测速 + 全球 5 站兜底池**（附中文用途说明，零云厂商 / 零银行 / 零运营商 / 零敏感政府站），选中后自动执行 **实时四重复检**（`TLS 1.3 + H2` / 非 CF / 无国内 CDN / 中国大陆可达）；
   * 内置**家宽联动子选项**：既可在海外家宽机上一键生成 `Shadowsocks-2022` 高位落地入站，也可在中国大陆优化机上粘贴家宽信息**一键完成前置中转**（自动写入出站与置顶防回国路由）。
 * **方案 2：`Cloudflare CDN 优选`（`VLESS + XHTTP + TLS`）**
   * 默认端口 `2053`（回车即用，支持自定义其他 CF HTTPS 回源端口），自动配置 `XHTTP` 与真实 IP 透传。
