@@ -130,97 +130,14 @@ RES_PORT=""
 RES_SS_PASS=""
 RES_WHITELIST_IP=""
 
-case "$MODE" in
-    1)
-        echo ""
-        echo "  --- 方案 1 子模式选择 ---"
-        echo "  1) VLESS + XHTTP + REALITY（RPRX 最新 H2/XMUX，适合新版 v2rayN/v2rayNG）"
-        echo "  2) VLESS + raw + REALITY + Vision（全客户端通吃，极低延迟）"
-        echo "  3) 设为【海外住宅家宽落地机】（随机高位端口 SS-2022，供优化机一键中转）"
-        read -rp "请选择子模式 [1-3] (默认 1): " REALITY_SUBMODE
-        REALITY_SUBMODE="${REALITY_SUBMODE:-1}"
-
-        if [ "$REALITY_SUBMODE" = "3" ]; then
-            DEF_PORT=$((20000 + RANDOM % 30000))
-            read -rp "请输入家宽落地 SS-2022 监听端口 (回车默认随机高位端口 ${DEF_PORT}): " LISTEN_PORT
-            LISTEN_PORT="${LISTEN_PORT:-$DEF_PORT}"
-            read -rp "请输入允许连入的前置优化机 IP（留空则不设白名单，多个用逗号分隔）: " RES_WHITELIST_IP
-        else
-            read -rp "请输入 REALITY 监听端口 (回车默认 443，也可手动输入如 8443): " LISTEN_PORT
-            LISTEN_PORT="${LISTEN_PORT:-443}"
-            echo "  请选择 REALITY 回落目标域名 (SNI)："
-            echo "    1) 本机自动测速优选最佳 SNI（★ 推荐：1 秒并发实测 TLS 1.3 + H2 + 最低延迟）"
-            echo "    2) addons.mozilla.org      （免测默认：纯海外无国内 CDN）"
-            echo "    3) www.gentoo.org          （免测默认：纯海外非 CF，实测国内直连可达）"
-            echo "    4) 手动输入自定义域名      （自动体检 TLS 1.3+H2 / 非 CF / 国内 CDN / 是否被墙）"
-            read -rp "  请输入选项 [1-4] (回车默认 1): " SNI_OPT
-            case "${SNI_OPT:-1}" in
-                1)
-                    if command -v python3 >/dev/null 2>&1; then
-                        VPS_CC=$( (curl -fsSm 2 https://ipinfo.io/country 2>/dev/null || curl -fsSm 2 https://ifconfig.co/country-iso 2>/dev/null || true) | tr -dc 'A-Za-z' | tr '[:lower:]' '[:upper:]' | head -c 2 )
-                        echo "  -> 正在从本机并发实测非 CF / 无国内 CDN 纯海外 TLS 1.3 + H2 目标站 (机房地区: ${VPS_CC:-AUTO})..."
-                        SNI_LIST=$(VPS_CC="$VPS_CC" python3 - << 'SNIPY'
-import os, ssl, socket, time
-from concurrent.futures import ThreadPoolExecutor
-CANDIDATES = [
-    "addons.mozilla.org", "www.debian.org", "www.kernel.org", "www.postgresql.org",
-    "www.python.org", "www.gentoo.org", "www.hetzner.com", "www.oracle.com",
-    "www.cisco.com", "aws.amazon.com"
-]
-if os.environ.get("VPS_CC", "") in ("JP", "HK", "SG", "TW", "KR"):
-    CANDIDATES += ["www.sony.jp", "www.yahoo.co.jp", "www.lovelive-anime.jp"]
-def probe(host):
-    ctx = ssl.create_default_context()
-    ctx.set_alpn_protocols(["h2", "http/1.1"])
-    t0 = time.monotonic()
-    try:
-        with socket.create_connection((host, 443), timeout=2.5) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host) as ss:
-                if ss.version() == "TLSv1.3" and ss.selected_alpn_protocol() == "h2":
-                    return ((time.monotonic() - t0) * 1000, host)
-    except Exception:
-        pass
-    return None
-with ThreadPoolExecutor(max_workers=16) as ex:
-    res = sorted([r for r in ex.map(probe, CANDIDATES) if r])
-for rtt, host in res[:5]:
-    print(f"{host}|{rtt:.1f}")
-SNIPY
-)
-                        if [ -n "$SNI_LIST" ]; then
-                            idx=1
-                            SNI_ARR=()
-                            while IFS='|' read -r h rtt; do
-                                [ -z "$h" ] && continue
-                                SNI_ARR+=("$h")
-                                printf "     %d) %-24s (%s ms | TLSv1.3 + h2)\n" "$idx" "$h" "$rtt"
-                                idx=$((idx + 1))
-                            done <<< "$SNI_LIST"
-                            read -rp "  -> 请选择编号 [1-${#SNI_ARR[@]}] (回车默认 1): " PICK_IDX
-                            PICK_IDX="${PICK_IDX:-1}"
-                            if [[ "$PICK_IDX" =~ ^[0-9]+$ ]] && [ "$PICK_IDX" -ge 1 ] && [ "$PICK_IDX" -le "${#SNI_ARR[@]}" ]; then
-                                REALITY_SNI="${SNI_ARR[$((PICK_IDX - 1))]}"
-                            else
-                                REALITY_SNI="${SNI_ARR[0]}"
-                            fi
-                            echo "  -> 已选定本机最优 SNI: ${REALITY_SNI}"
-                        else
-                            echo "  -> [提示] 测速未命中可用站点，自动回退 addons.mozilla.org"
-                            REALITY_SNI="addons.mozilla.org"
-                        fi
-                    else
-                        echo "  -> [提示] 当前环境尚未安装 python3，自动回退 addons.mozilla.org"
-                        REALITY_SNI="addons.mozilla.org"
-                    fi
-                    ;;
-                2) REALITY_SNI="addons.mozilla.org" ;;
-                3) REALITY_SNI="www.gentoo.org" ;;
-                4)
-                    read -rp "  -> 请输入自定义目标域名 (如 www.example.com): " SNI_CUSTOM
-                    REALITY_SNI="${SNI_CUSTOM:-addons.mozilla.org}"
-                    if command -v python3 >/dev/null 2>&1; then
-                        echo "  -> 正在执行四重体检 (TLS 1.3+H2 / 非 CF / 国内 CDN / 中国大陆连通性)..."
-                        SNI_CHK=$(SNI_TEST="$REALITY_SNI" python3 - << 'CHKPY'
+verify_reality_sni() {
+    local target_sni="$1"
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "  -> 正在对 ${target_sni} 执行实时四重复检 (TLS 1.3+H2 / 非 CF / 无国内 CDN / 中国大陆可达)..."
+    local chk_out
+    chk_out=$(SNI_TEST="$target_sni" python3 - << 'CHKPY'
 import os, ssl, socket, time, json, http.client, urllib.request
 h = os.environ["SNI_TEST"].strip()
 ctx = ssl.create_default_context()
@@ -293,12 +210,194 @@ except Exception as e:
     print(f"WARN|{e}")
 CHKPY
 )
-                        if [[ "$SNI_CHK" == OK\|* ]]; then
-                            echo "  -> [体检通过] ${REALITY_SNI}: ${SNI_CHK#OK|}"
+    if [[ "$chk_out" == OK\|* ]]; then
+        echo "  -> [实时复检通过] ${target_sni}: ${chk_out#OK|}"
+    else
+        echo "  -> [实时复检警告] ${target_sni}: ${chk_out#WARN|}"
+    fi
+}
+
+case "$MODE" in
+    1)
+        echo ""
+        echo "  --- 方案 1 子模式选择 ---"
+        echo "  1) VLESS + XHTTP + REALITY（RPRX 最新 H2/XMUX，适合新版 v2rayN/v2rayNG）"
+        echo "  2) VLESS + raw + REALITY + Vision（全客户端通吃，极低延迟）"
+        echo "  3) 设为【海外住宅家宽落地机】（随机高位端口 SS-2022，供优化机一键中转）"
+        read -rp "请选择子模式 [1-3] (默认 1): " REALITY_SUBMODE
+        REALITY_SUBMODE="${REALITY_SUBMODE:-1}"
+
+        if [ "$REALITY_SUBMODE" = "3" ]; then
+            DEF_PORT=$((20000 + RANDOM % 30000))
+            read -rp "请输入家宽落地 SS-2022 监听端口 (回车默认随机高位端口 ${DEF_PORT}): " LISTEN_PORT
+            LISTEN_PORT="${LISTEN_PORT:-$DEF_PORT}"
+            read -rp "请输入允许连入的前置优化机 IP（留空则不设白名单，多个用逗号分隔）: " RES_WHITELIST_IP
+        else
+            read -rp "请输入 REALITY 监听端口 (回车默认 443，也可手动输入如 8443): " LISTEN_PORT
+            LISTEN_PORT="${LISTEN_PORT:-443}"
+            echo "  请选择 REALITY 回落目标域名 (SNI)："
+            echo "    1) 按机房地区自动测速优选（★ 推荐：本土 5 站 + 全球兜底池 + 选后自动实时复检）"
+            echo "    2) addons.mozilla.org      （免测默认：Firefox 扩展商店 · 纯海外无国内 CDN）"
+            echo "    3) www.gentoo.org          （免测默认：Gentoo Linux 官网 · 非 CF 国内直连可达）"
+            echo "    4) 手动输入自定义域名      （自动四重体检 TLS 1.3+H2 / 非 CF / 国内 CDN / 是否被墙）"
+            read -rp "  请输入选项 [1-4] (回车默认 1): " SNI_OPT
+            case "${SNI_OPT:-1}" in
+                1)
+                    if command -v python3 >/dev/null 2>&1; then
+                        VPS_CC=$( (curl -fsSm 2 https://ipinfo.io/country 2>/dev/null || curl -fsSm 2 https://ifconfig.co/country-iso 2>/dev/null || true) | tr -dc 'A-Za-z' | tr '[:lower:]' '[:upper:]' | head -c 2 )
+                        echo ""
+                        echo "  [说明] REALITY 选站铁律：纯海外、TLSv1.3+H2、非 CF、无国内 CDN、国内直连可达，同地区低延迟更自然。"
+                        echo "  -> 正在并发测速当前地区 (${VPS_CC:-GLOBAL}) 本土站 + 全球通用兜底池..."
+                        SNI_LIST=$(VPS_CC="$VPS_CC" python3 - << 'SNIPY'
+import os, ssl, socket, time
+from concurrent.futures import ThreadPoolExecutor
+
+GLOBAL_POOL = [
+    ("www.gentoo.org",     "Gentoo Linux 官网"),
+    ("www.python.org",     "Python 官方社区"),
+    ("www.debian.org",     "Debian Linux 官网"),
+    ("www.kernel.org",     "Linux 内核官网"),
+    ("addons.mozilla.org", "Firefox 扩展商店"),
+]
+REGIONAL = {
+    "US": ("北美", [
+        ("www.stanford.edu", "斯坦福大学官网"),
+        ("www.harvard.edu",  "哈佛大学官网"),
+        ("www.cornell.edu",  "康奈尔大学官网"),
+        ("www.utoronto.ca",  "多伦多大学官网"),
+        ("www.ubc.ca",       "英属哥伦比亚大学"),
+    ]),
+    "JP": ("日本", [
+        ("www.sony.jp",           "索尼日本官网"),
+        ("www.yahoo.co.jp",       "日本雅虎门户"),
+        ("www.honda.co.jp",       "本田日本官网"),
+        ("www.softbank.jp",       "软银日本官网"),
+        ("www.lovelive-anime.jp", "日本动漫官网"),
+    ]),
+    "HK": ("香港", [
+        ("www.hku.hk",      "香港大学官网"),
+        ("www.hko.gov.hk",  "香港天文台"),
+        ("www.gov.hk",      "香港政府一站通"),
+        ("www.cityu.edu.hk","香港城市大学"),
+        ("www.hkbu.edu.hk", "香港浸会大学"),
+    ]),
+    "SG": ("新加坡", [
+        ("nus.edu.sg",            "新加坡国立大学"),
+        ("www.gov.sg",            "新加坡政府门户"),
+        ("www.singtel.com",       "新加坡电信官网"),
+        ("www.changiairport.com", "新加坡樟宜机场"),
+        ("www.sutd.edu.sg",       "新加坡科技设计大学"),
+    ]),
+    "TW": ("台湾", [
+        ("www.asus.com",     "华硕国际官网"),
+        ("www.msi.com",      "微星国际官网"),
+        ("www.gigabyte.com", "技嘉国际官网"),
+        ("www.hku.hk",       "香港大学 (近距)"),
+        ("www.sony.jp",      "索尼日本 (近距)"),
+    ]),
+    "KR": ("韩国", [
+        ("www.naver.com",     "韩国 Naver 门户"),
+        ("www.sktelecom.com", "韩国 SK 电讯官网"),
+        ("www.samsung.com",   "三星国际官网"),
+        ("www.koreanair.com", "大韩航空官网"),
+        ("www.coupang.com",   "韩国 Coupang 电商"),
+    ]),
+    "EU": ("欧洲", [
+        ("www.hetzner.com",    "德国 Hetzner 官网"),
+        ("www.postgresql.org", "PostgreSQL (奥地利)"),
+        ("www.tudelft.nl",     "荷兰代尔夫特理工"),
+        ("www.bosch.com",      "德国博世官网"),
+        ("www.nokia.com",      "芬兰诺基亚官网"),
+    ]),
+    "GB": ("英国", [
+        ("www.cam.ac.uk",  "剑桥大学官网"),
+        ("www.ed.ac.uk",   "爱丁堡大学官网"),
+        ("www.arm.com",    "英国 Arm 架构官网"),
+        ("www.gov.uk",     "英国政府官网"),
+        ("www.tudelft.nl", "荷兰代尔夫特理工 (近距)"),
+    ]),
+}
+cc = os.environ.get("VPS_CC", "")
+if cc in ("US", "CA"):
+    rk = "US"
+elif cc in ("JP", "HK", "SG", "TW", "KR", "GB"):
+    rk = cc
+elif cc in ("DE", "NL", "FR", "CH", "AT", "SE", "FI", "PL", "IT", "ES", "LU", "IE", "NO", "DK", "BE", "CZ"):
+    rk = "EU"
+else:
+    rk = ""
+
+r_name, r_pool = REGIONAL.get(rk, ("", []))
+all_items = [("REG", h, d) for h, d in r_pool] + [("GLB", h, d) for h, d in GLOBAL_POOL]
+
+def probe(item):
+    grp, host, desc = item
+    ctx = ssl.create_default_context()
+    ctx.set_alpn_protocols(["h2", "http/1.1"])
+    t0 = time.monotonic()
+    try:
+        with socket.create_connection((host, 443), timeout=2.5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ss:
+                if ss.version() == "TLSv1.3" and ss.selected_alpn_protocol() == "h2":
+                    return (grp, (time.monotonic() - t0) * 1000, host, desc)
+    except Exception:
+        pass
+    return None
+
+with ThreadPoolExecutor(max_workers=12) as ex:
+    res = [r for r in ex.map(probe, all_items) if r]
+
+reg_res = sorted([r for r in res if r[0] == "REG"], key=lambda x: x[1])
+glb_res = sorted([r for r in res if r[0] == "GLB"], key=lambda x: x[1])
+if r_name and reg_res:
+    print(f"HDR|当前地区推荐 ({r_name}) · 按实测延迟排序")
+    for _, rtt, host, desc in reg_res[:5]:
+        print(f"ITEM|{host}|{rtt:.1f}|{desc}")
+if glb_res:
+    print("HDR|全球通用兜底池 · 跨区通用 · 按实测延迟排序")
+    for _, rtt, host, desc in glb_res[:5]:
+        print(f"ITEM|{host}|{rtt:.1f}|{desc}")
+SNIPY
+)
+                        if [ -n "$SNI_LIST" ]; then
+                            idx=1
+                            SNI_ARR=()
+                            while IFS='|' read -r tag f1 f2 f3; do
+                                [ -z "$tag" ] && continue
+                                if [ "$tag" = "HDR" ]; then
+                                    echo ""
+                                    echo "  【${f1}】"
+                                elif [ "$tag" = "ITEM" ]; then
+                                    SNI_ARR+=("$f1")
+                                    printf "    %2d) %-23s (%6s ms | %s)\n" "$idx" "$f1" "$f2" "$f3"
+                                    idx=$((idx + 1))
+                                fi
+                            done <<< "$SNI_LIST"
+                            echo ""
+                            read -rp "  -> 请选择编号 [1-${#SNI_ARR[@]}] (回车默认 1): " PICK_IDX
+                            PICK_IDX="${PICK_IDX:-1}"
+                            if [[ "$PICK_IDX" =~ ^[0-9]+$ ]] && [ "$PICK_IDX" -ge 1 ] && [ "$PICK_IDX" -le "${#SNI_ARR[@]}" ]; then
+                                REALITY_SNI="${SNI_ARR[$((PICK_IDX - 1))]}"
+                            else
+                                REALITY_SNI="${SNI_ARR[0]}"
+                            fi
+                            echo "  -> 已选定目标 SNI: ${REALITY_SNI}"
+                            verify_reality_sni "$REALITY_SNI"
                         else
-                            echo "  -> [体检警告] ${REALITY_SNI}: ${SNI_CHK#WARN|}"
+                            echo "  -> [提示] 测速未命中可用站点，自动回退 addons.mozilla.org"
+                            REALITY_SNI="addons.mozilla.org"
                         fi
+                    else
+                        echo "  -> [提示] 当前环境尚未安装 python3，自动回退 addons.mozilla.org"
+                        REALITY_SNI="addons.mozilla.org"
                     fi
+                    ;;
+                2) REALITY_SNI="addons.mozilla.org" ;;
+                3) REALITY_SNI="www.gentoo.org" ;;
+                4)
+                    read -rp "  -> 请输入自定义目标域名 (如 www.example.com): " SNI_CUSTOM
+                    REALITY_SNI="${SNI_CUSTOM:-addons.mozilla.org}"
+                    verify_reality_sni "$REALITY_SNI"
                     ;;
                 *) REALITY_SNI="addons.mozilla.org" ;;
             esac
