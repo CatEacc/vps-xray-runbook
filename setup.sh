@@ -157,15 +157,14 @@ case "$MODE" in
             case "${SNI_OPT:-1}" in
                 1)
                     if command -v python3 >/dev/null 2>&1; then
-                        echo "  -> 正在从本机并发实测 14 个纯海外非 CF 的 TLS 1.3 + H2 目标站..."
+                        echo "  -> 正在从本机并发实测 12 个实测非 CF 的纯海外 TLS 1.3 + H2 目标站..."
                         SNI_LIST=$(python3 - << 'SNIPY'
 import ssl, socket, time
 from concurrent.futures import ThreadPoolExecutor
 CANDIDATES = [
-    "addons.mozilla.org", "dl.google.com", "www.debian.org", "www.hetzner.com",
-    "www.digitalocean.com", "www.linode.com", "www.vultr.com", "www.amd.com",
-    "www.nvidia.com", "www.oracle.com", "www.redhat.com", "www.sony.jp",
-    "www.nintendo.co.jp", "www.lovelive-anime.jp"
+    "addons.mozilla.org", "dl.google.com", "www.debian.org", "www.kernel.org",
+    "www.postgresql.org", "www.python.org", "www.gentoo.org", "www.hetzner.com",
+    "www.oracle.com", "www.sony.jp", "www.yahoo.co.jp", "www.lovelive-anime.jp"
 ]
 def probe(host):
     ctx = ssl.create_default_context()
@@ -218,7 +217,7 @@ SNIPY
                     REALITY_SNI="${SNI_CUSTOM:-addons.mozilla.org}"
                     if command -v python3 >/dev/null 2>&1; then
                         SNI_CHK=$(SNI_TEST="$REALITY_SNI" python3 - << 'CHKPY'
-import os, ssl, socket, time
+import os, ssl, socket, time, http.client
 h = os.environ["SNI_TEST"].strip()
 ctx = ssl.create_default_context()
 ctx.set_alpn_protocols(["h2", "http/1.1"])
@@ -228,10 +227,20 @@ try:
         with ctx.wrap_socket(sock, server_hostname=h) as ss:
             rtt = (time.monotonic() - t0) * 1000
             ver, alpn = ss.version(), ss.selected_alpn_protocol()
-            if ver == "TLSv1.3" and alpn == "h2":
-                print(f"OK|{ver} + {alpn} ({rtt:.1f} ms)")
-            else:
-                print(f"WARN|{ver} / ALPN={alpn}")
+    is_cf = False
+    try:
+        conn = http.client.HTTPSConnection(h, timeout=2.5)
+        conn.request("HEAD", "/", headers={"User-Agent": "Mozilla/5.0"})
+        hdrs = {k.lower(): v for k, v in conn.getresponse().getheaders()}
+        is_cf = ('cf-ray' in hdrs) or ('cloudflare' in hdrs.get('server', '').lower())
+    except Exception:
+        pass
+    if is_cf:
+        print(f"WARN|背后套了 Cloudflare CDN，易被扫作免费 CF 反代 IP ({ver}+{alpn}, {rtt:.1f} ms)")
+    elif ver == "TLSv1.3" and alpn == "h2":
+        print(f"OK|{ver} + {alpn} | 非 CF ({rtt:.1f} ms)")
+    else:
+        print(f"WARN|{ver} / ALPN={alpn}")
 except Exception as e:
     print(f"WARN|{e}")
 CHKPY
