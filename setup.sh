@@ -677,7 +677,7 @@ EOF
 systemctl daemon-reload
 
 if [ ! -x /usr/local/x-ui/x-ui ]; then
-    printf "n\n" | bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh) "$XUI_VERSION"
+    bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh) "$XUI_VERSION" <<< "n"
 fi
 
 systemctl stop x-ui 2>/dev/null || true
@@ -692,7 +692,8 @@ mkdir -p /tmp/xray-install
 curl -fsSL -o /tmp/xray-install/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
 python3 -m zipfile -e /tmp/xray-install/xray.zip /tmp/xray-install/
 chmod +x /tmp/xray-install/xray
-/tmp/xray-install/xray version | grep -q "$XRAY_VER_NUM"
+XRAY_VER_OUT=$(/tmp/xray-install/xray version)
+[[ "$XRAY_VER_OUT" == *"$XRAY_VER_NUM"* ]]
 cp -f /tmp/xray-install/xray "${XRAY_BIN}.new" && chmod +x "${XRAY_BIN}.new" && mv -f "${XRAY_BIN}.new" "$XRAY_BIN"
 cp -f /tmp/xray-install/geoip.dat /usr/local/x-ui/bin/geoip.dat 2>/dev/null || true
 cp -f /tmp/xray-install/geosite.dat /usr/local/x-ui/bin/geosite.dat 2>/dev/null || true
