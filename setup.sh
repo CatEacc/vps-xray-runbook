@@ -260,12 +260,19 @@ GLOBAL_POOL = [
     ("addons.mozilla.org", "Firefox 扩展商店"),
 ]
 REGIONAL = {
-    "US": ("北美", [
-        ("www.stanford.edu", "斯坦福大学官网"),
-        ("www.harvard.edu",  "哈佛大学官网"),
-        ("www.cornell.edu",  "康奈尔大学官网"),
-        ("www.utoronto.ca",  "多伦多大学官网"),
-        ("www.ubc.ca",       "英属哥伦比亚大学"),
+    "US": ("美国", [
+        ("aws.amazon.com",     "亚马逊云 AWS 官网"),
+        ("www.oracle.com",     "甲骨文 Oracle 官网"),
+        ("www.salesforce.com", "Salesforce 云官网"),
+        ("www.ebay.com",       "eBay 国际电商"),
+        ("www.stanford.edu",   "斯坦福大学官网"),
+    ]),
+    "CA": ("加拿大", [
+        ("www.utoronto.ca", "多伦多大学官网"),
+        ("www.ubc.ca",      "英属哥伦比亚大学"),
+        ("aws.amazon.com",  "亚马逊云 AWS 官网"),
+        ("www.oracle.com",  "甲骨文 Oracle 官网"),
+        ("www.ebay.com",    "eBay 国际电商"),
     ]),
     "JP": ("日本", [
         ("www.sony.jp",           "索尼日本官网"),
@@ -275,11 +282,11 @@ REGIONAL = {
         ("www.lovelive-anime.jp", "日本动漫官网"),
     ]),
     "HK": ("香港", [
-        ("www.hku.hk",      "香港大学官网"),
-        ("www.hko.gov.hk",  "香港天文台"),
-        ("www.gov.hk",      "香港政府一站通"),
-        ("www.cityu.edu.hk","香港城市大学"),
-        ("www.hkbu.edu.hk", "香港浸会大学"),
+        ("www.hsbc.com.hk",  "香港汇丰银行官网"),
+        ("www.hangseng.com", "香港恒生银行官网"),
+        ("www.hko.gov.hk",   "香港天文台"),
+        ("www.gov.hk",       "香港政府一站通"),
+        ("www.hku.hk",       "香港大学官网"),
     ]),
     "SG": ("新加坡", [
         ("nus.edu.sg",            "新加坡国立大学"),
@@ -318,9 +325,7 @@ REGIONAL = {
     ]),
 }
 cc = os.environ.get("VPS_CC", "")
-if cc in ("US", "CA"):
-    rk = "US"
-elif cc in ("JP", "HK", "SG", "TW", "KR", "GB"):
+if cc in ("US", "CA", "JP", "HK", "SG", "TW", "KR", "GB"):
     rk = cc
 elif cc in ("DE", "NL", "FR", "CH", "AT", "SE", "FI", "PL", "IT", "ES", "LU", "IE", "NO", "DK", "BE", "CZ"):
     rk = "EU"
