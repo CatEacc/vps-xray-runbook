@@ -112,8 +112,9 @@ if [ -z "$MODE" ]; then
     printf "      ${DIM}精品线 QUIC BBR / 廉价线 Brutal，默认 UDP 8443 错开 TCP 443${R}\n"
     printf "  ${GREEN}[4]${R} ${WHITE}纯系统底层内核调优模式${R} ${ORANGE}· 零代理面板${R}\n"
     printf "      ${DIM}仅部署 BBR / 按内存分档缓冲 / 1GB Swap / MPTCP 防护 / Fail2ban${R}\n"
-    printf "  ${GREEN}[5]${R} ${WHITE}一键回滚系统底层调优${R} ${DIM}· 恢复原厂内核/日志/Swap 快照${R}\n\n"
-    read -rp "$(printf "${YELLOW}  请输入方案编号 [1-5] (回车默认 1): ${R}")" MODE
+    printf "  ${GREEN}[5]${R} ${WHITE}一键回滚系统底层调优${R} ${DIM}· 恢复原厂内核/日志/Swap 快照${R}\n"
+    printf "  ${GREEN}[6]${R} ${WHITE}一键导出所有节点链接 & 面板访问命令${R} ${CYAN}· 只读${R}\n\n"
+    read -rp "$(printf "${YELLOW}  请输入方案编号 [1-6] (回车默认 1): ${R}")" MODE
     MODE="${MODE:-1}"
 fi
 
@@ -156,15 +157,15 @@ case "$MODE" in
             case "${SNI_OPT:-1}" in
                 1)
                     if command -v python3 >/dev/null 2>&1; then
-                        echo "  -> 正在从本机并发实测 16 个纯海外 TLS 1.3 + H2 目标站..."
+                        echo "  -> 正在从本机并发实测 14 个纯海外非 CF 的 TLS 1.3 + H2 目标站..."
                         SNI_LIST=$(python3 - << 'SNIPY'
 import ssl, socket, time
 from concurrent.futures import ThreadPoolExecutor
 CANDIDATES = [
-    "addons.mozilla.org", "dl.google.com", "www.cloudflare.com", "pkg.cloudflare.com",
-    "www.debian.org", "www.hetzner.com", "www.digitalocean.com", "www.linode.com",
-    "www.vultr.com", "www.amd.com", "www.nvidia.com", "www.oracle.com",
-    "www.redhat.com", "www.sony.jp", "www.nintendo.co.jp", "www.lovelive-anime.jp"
+    "addons.mozilla.org", "dl.google.com", "www.debian.org", "www.hetzner.com",
+    "www.digitalocean.com", "www.linode.com", "www.vultr.com", "www.amd.com",
+    "www.nvidia.com", "www.oracle.com", "www.redhat.com", "www.sony.jp",
+    "www.nintendo.co.jp", "www.lovelive-anime.jp"
 ]
 def probe(host):
     ctx = ssl.create_default_context()
@@ -314,8 +315,121 @@ CHKPY
         echo "  [完成] 已恢复系统底层调优原厂快照 (拥塞控制: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo N/A))"
         exit 0
         ;;
+    6|links)
+        echo ""
+        SSH_PORT_SHOW=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}' || true)
+        SSH_PORT_SHOW="${SSH_PORT_SHOW:-22}"
+        SERVER_IP="$SERVER_IP" SSH_PORT_SHOW="$SSH_PORT_SHOW" python3 - << 'EXPPY'
+import sqlite3, json, os, subprocess, urllib.parse, base64
+
+server_ip = os.environ.get('SERVER_IP', 'YOUR_SERVER_IP')
+ssh_port = os.environ.get('SSH_PORT_SHOW', '22')
+db_path = '/etc/x-ui/x-ui.db'
+
+print("==================================================================")
+print("  【节点分享链接一键导出】")
+print("==================================================================")
+found = 0
+if os.path.exists(db_path):
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    for remark, port, proto, s_str, st_str, enable in c.execute(
+        "SELECT remark, port, protocol, settings, stream_settings, enable FROM inbounds"
+    ).fetchall():
+        if not enable:
+            continue
+        s = json.loads(s_str or '{}')
+        st = json.loads(st_str or '{}')
+        if proto == 'vless':
+            clients = s.get('clients', [])
+            if not clients:
+                continue
+            u = clients[0].get('id', '')
+            flow = clients[0].get('flow', '')
+            net = st.get('network', 'tcp')
+            sec = st.get('security', 'none')
+            r_enc = urllib.parse.quote(remark or f'VLESS-{port}')
+            if sec == 'reality':
+                rs = st.get('realitySettings', {})
+                pbk = rs.get('settings', {}).get('publicKey', '')
+                sni = (rs.get('serverNames') or ['addons.mozilla.org'])[0]
+                sid = (rs.get('shortIds') or [''])[0]
+                if net == 'xhttp':
+                    path = urllib.parse.quote(st.get('xhttpSettings', {}).get('path', '/vless-xhttp'), safe='')
+                    link = f"vless://{u}@{server_ip}:{port}?type=xhttp&path={path}&mode=auto&security=reality&pbk={pbk}&fp=chrome&sni={sni}&sid={sid}&spx=%2F#{r_enc}"
+                else:
+                    fl = f"&flow={flow}" if flow else ""
+                    link = f"vless://{u}@{server_ip}:{port}?type=tcp&security=reality&pbk={pbk}&fp=chrome&sni={sni}&sid={sid}&spx=%2F{fl}#{r_enc}"
+                print(f"  [{remark}] {link}")
+                found += 1
+            elif sec == 'tls':
+                sni = st.get('tlsSettings', {}).get('serverName', server_ip)
+                if net == 'xhttp':
+                    path = urllib.parse.quote(st.get('xhttpSettings', {}).get('path', '/vless-xhttp'), safe='')
+                    link = f"vless://{u}@{sni}:{port}?type=xhttp&path={path}&mode=auto&host={sni}&security=tls&sni={sni}#{r_enc}"
+                else:
+                    path = urllib.parse.quote(st.get('wsSettings', {}).get('path', '/'), safe='')
+                    link = f"vless://{u}@{sni}:{port}?type={net}&path={path}&host={sni}&security=tls&sni={sni}#{r_enc}"
+                print(f"  [{remark}] {link}")
+                found += 1
+        elif proto == 'shadowsocks':
+            method = s.get('method', '')
+            pwd = s.get('password', '')
+            if method and pwd:
+                cred = base64.urlsafe_b64encode(f"{method}:{pwd}".encode()).decode().rstrip('=')
+                print(f"  [{remark}] ss://{cred}@{server_ip}:{port}#{urllib.parse.quote(remark or f'SS-{port}')}")
+                print(f"    (家宽中转参数: IP={server_ip} | PORT={port} | PASS={pwd})")
+                found += 1
+
+    kv = dict(c.execute("SELECT key, value FROM settings WHERE key IN ('webPort','webBasePath','webListen')").fetchall())
+    conn.close()
+else:
+    kv = {}
+
+if os.path.exists('/etc/hysteria/config.yaml'):
+    hy_port = '8443'
+    hy_pass = ''
+    for line in open('/etc/hysteria/config.yaml'):
+        ls = line.strip()
+        if ls.startswith('listen:'):
+            hy_port = ls.split(':')[-1].strip()
+        elif ls.startswith('password:'):
+            hy_pass = ls.split(':', 1)[1].strip().strip('"').strip("'")
+    pin = ''
+    if os.path.exists('/etc/hysteria/server.crt'):
+        try:
+            pin = subprocess.check_output(
+                ['openssl', 'x509', '-in', '/etc/hysteria/server.crt', '-noout', '-sha256', '-fingerprint'],
+                text=True
+            ).split('=', 1)[1].strip()
+        except Exception:
+            pass
+    if hy_pass:
+        print(f"  [Hysteria2] hysteria2://{hy_pass}@{server_ip}:{hy_port}?insecure=1&sni=www.bing.com&pinSHA256={pin}&mport=20000-50000#Hysteria2-PortHopping")
+        found += 1
+
+if not found:
+    print("  (当前未检测到已启用的节点)")
+
+if kv:
+    wport = kv.get('webPort', '2053')
+    wbase = kv.get('webBasePath', '/')
+    if not wbase.startswith('/'):
+        wbase = '/' + wbase
+    print("")
+    print("==================================================================")
+    print("  【3x-ui 面板安全访问指南（面板已锁死 127.0.0.1）】")
+    print("==================================================================")
+    print("  1) 在你本地电脑终端执行以下命令建立加密隧道（保持窗口不关）：")
+    print(f"     ssh -N -L 20530:127.0.0.1:{wport} root@{server_ip} -p {ssh_port}")
+    print("  2) 然后本地浏览器直接打开：")
+    print(f"     https://127.0.0.1:20530{wbase}")
+print("==================================================================")
+EXPPY
+        exit 0
+        ;;
     *)
-        echo "[错误] 无效的方案编号: ${MODE}，仅支持 1 / 2 / 3 / 4 / 5"
+        echo "[错误] 无效的方案编号: ${MODE}，仅支持 1 / 2 / 3 / 4 / 5 / 6"
         exit 1
         ;;
 esac
