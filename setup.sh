@@ -157,15 +157,18 @@ case "$MODE" in
             case "${SNI_OPT:-1}" in
                 1)
                     if command -v python3 >/dev/null 2>&1; then
-                        echo "  -> 正在从本机并发实测 12 个实测非 CF 的纯海外 TLS 1.3 + H2 目标站..."
-                        SNI_LIST=$(python3 - << 'SNIPY'
-import ssl, socket, time
+                        VPS_CC=$( (curl -fsSm 2 https://ipinfo.io/country 2>/dev/null || curl -fsSm 2 https://ifconfig.co/country-iso 2>/dev/null || true) | tr -dc 'A-Za-z' | tr '[:lower:]' '[:upper:]' | head -c 2 )
+                        echo "  -> 正在从本机并发实测非 CF 纯海外 TLS 1.3 + H2 目标站 (机房地区: ${VPS_CC:-AUTO})..."
+                        SNI_LIST=$(VPS_CC="$VPS_CC" python3 - << 'SNIPY'
+import os, ssl, socket, time
 from concurrent.futures import ThreadPoolExecutor
 CANDIDATES = [
     "addons.mozilla.org", "dl.google.com", "www.debian.org", "www.kernel.org",
     "www.postgresql.org", "www.python.org", "www.gentoo.org", "www.hetzner.com",
-    "www.oracle.com", "www.sony.jp", "www.yahoo.co.jp", "www.lovelive-anime.jp"
+    "www.oracle.com"
 ]
+if os.environ.get("VPS_CC", "") in ("JP", "HK", "SG", "TW", "KR"):
+    CANDIDATES += ["www.sony.jp", "www.yahoo.co.jp", "www.lovelive-anime.jp"]
 def probe(host):
     ctx = ssl.create_default_context()
     ctx.set_alpn_protocols(["h2", "http/1.1"])
@@ -1124,6 +1127,7 @@ systemctl restart x-ui
 
 PANEL_PORT=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webPort' LIMIT 1\").fetchone(); print(r[0].strip() if r and r[0] else '54321')" 2>/dev/null | tr -dc '0-9' || true)
 PANEL_PATH=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webBasePath' LIMIT 1\").fetchone(); print(r[0].strip().strip('/') if r and r[0] else '')" 2>/dev/null || true)
+PANEL_SCHEME=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webCertFile' LIMIT 1\").fetchone(); print('https' if r and r[0] and r[0].strip() else 'http')" 2>/dev/null || echo "http")
 
 echo ""
 echo "=================================================================="
@@ -1134,7 +1138,7 @@ echo "  - Xray 内核     : $($XRAY_BIN version | head -n 1)"
 echo "------------------------------------------------------------------"
 echo "  3x-ui 面板已锁定 127.0.0.1:${PANEL_PORT}，本地 SSH 隧道访问命令："
 echo "  ssh -L ${PANEL_PORT}:127.0.0.1:${PANEL_PORT} root@${SERVER_IP}"
-echo "  本地浏览器打开: https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
+echo "  本地浏览器打开: ${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 if [ -f /tmp/setup_result.txt ]; then
     if grep -q "RESULT_TYPE=RESIDENTIAL_SS" /tmp/setup_result.txt; then
         echo "------------------------------------------------------------------"
