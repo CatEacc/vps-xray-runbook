@@ -335,7 +335,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 GLOBAL_POOL = [
     ("www.gentoo.org",     "Gentoo Linux 官网"),
-    ("www.python.org",     "Python 官方社区"),
+    ("www.openssl.org",    "OpenSSL 加密库官网"),
     ("www.debian.org",     "Debian Linux 官网"),
     ("www.kernel.org",     "Linux 内核官网"),
     ("addons.mozilla.org", "Firefox 扩展商店"),
