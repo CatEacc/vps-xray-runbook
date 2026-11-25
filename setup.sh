@@ -1167,6 +1167,7 @@ custom_rules = [
     if not (r.get('outboundTag') == 'api' and r.get('inboundTag') == ['api'])
     and not (r.get('outboundTag') == 'blocked' and set(r.get('ip', [])) <= {'geoip:private', 'geoip:cn'} and not r.get('protocol') and not r.get('inboundTag') and not r.get('user'))
     and not (r.get('outboundTag') == 'blocked' and r.get('protocol') == ['bittorrent'] and not r.get('ip') and not r.get('domain'))
+    and not (r.get('outboundTag') == 'blocked' and str(r.get('port', '')) == '25' and not r.get('ip') and not r.get('domain'))
     and not (inbound_tag_for_relay and r.get('inboundTag') == [inbound_tag_for_relay] and str(r.get('outboundTag', '')).startswith('out-res'))
 ]
 if relay_tag and inbound_tag_for_relay:
@@ -1177,6 +1178,7 @@ cfg['routing']['rules'] = [
     {'type': 'field', 'inboundTag': ['api'], 'outboundTag': 'api'},
     {'type': 'field', 'outboundTag': 'blocked', 'ip': ['geoip:private']},
     {'type': 'field', 'outboundTag': 'blocked', 'protocol': ['bittorrent']},
+    {'type': 'field', 'outboundTag': 'blocked', 'port': '25'},
     {'type': 'field', 'outboundTag': 'blocked', 'ip': ['geoip:cn']},
 ] + custom_rules
 
@@ -1217,6 +1219,10 @@ table inet res_guard {
         udp dport ${LISTEN_PORT} ip saddr @trusted_relays_v4 accept
         tcp dport ${LISTEN_PORT} drop
         udp dport ${LISTEN_PORT} drop
+    }
+    chain output {
+        type filter hook output priority filter; policy accept;
+        tcp dport 25 reject with tcp reset
     }
 }
 EOF
