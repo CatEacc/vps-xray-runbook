@@ -366,7 +366,7 @@ REGIONAL = {
         ("www.mandarinoriental.com", "香港文华东方酒店"),
         ("www.k11musea.com",         "香港 K11 MUSEA"),
         ("www.pacificplace.com.hk",  "香港太古广场"),
-        ("www.hko.gov.hk",           "香港天文台"),
+        ("www.cityu.edu.hk",         "香港城市大学"),
         ("www.hku.hk",               "香港大学官网"),
     ]),
     "SG": ("新加坡", [
