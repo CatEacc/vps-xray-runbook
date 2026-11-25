@@ -1386,6 +1386,14 @@ if [ -f /tmp/setup_result.txt ]; then
     fi
     rm -f /tmp/setup_result.txt
 fi
+if [ "$MODE" = "2" ]; then
+    echo "------------------------------------------------------------------"
+    echo "  【Cloudflare 后台 4 步检查清单（小白照着点）】："
+    echo "  1. DNS 添加 A 记录: ${CF_DOMAIN} -> ${SERVER_IP}（务必开启小黄云 Proxied）"
+    echo "  2. SSL/TLS 加密模式设为: Full（自签证书勿选 Flexible 或 Full Strict，防 525/526）"
+    echo "  3. 云厂商安全组放行: TCP ${LISTEN_PORT}（CF 支持 443/2053/2083/2087/2096/8443）"
+    echo "  4. 客户端优选提速: 仅改「地址(Address)」为优选 IP/域名，Host 与 SNI 保持 ${CF_DOMAIN} 不变"
+fi
 if [ -n "$HY2_LINK" ]; then
     echo "------------------------------------------------------------------"
     echo "  【Hysteria 2 导入链接】："

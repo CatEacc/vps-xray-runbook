@@ -514,17 +514,38 @@ systemctl restart x-ui
 ---
 
 ### 方案 2：Cloudflare CDN 优选（推荐 `VLESS + XHTTP + TLS`，默认 `2053` 端口）
-* **定位**：晚高峰抗拥堵兜底、彻底隐藏源站真实 IP。
+* **定位**：晚高峰抗拥堵兜底、彻底隐藏源站真实 IP、挽救已被阻断但未封全端口的机器。
 * **协议选型**：
   * **首选 `XHTTP`（`network: "xhttp"`）**：采用标准 HTTP/2 语义 + XMUX 多路复用与随机填充，全面取代传统 WebSocket（`xhttpSettings` 仅配 `path` + `mode: "auto"`）；
   * **兼容备选 `WS`**：仅在需兼容不支持 XHTTP 的老旧/第三方客户端时使用。
-* **证书与安全规范**：
-  * **优先推荐**使用 `acme.sh` 或 Cloudflare Origin Certificate 配置正规证书，Cloudflare 后台 **SSL/TLS** 设为 **`Full (Strict)`**；
-  * 仅在临时使用自签证书时将 Cloudflare 设为 `Full`，客户端始终通过域名验证 Cloudflare 边缘正规证书，**绝不开启无约束的 `allowInsecure: true`**（Xray v26.2.6+ 已强制限制）。
+* **小白 5 步保姆级 Cloudflare 后台配置教学**：
+  1. **准备域名并托管到 Cloudflare**：将你自己的域名（任意后缀均可）NS 接入 Cloudflare。
+  2. **添加 DNS 解析并开启小黄云（Proxied）**：
+     * 进入 Cloudflare 后台 → **DNS → Records → Add record**：
+     * Type 选 **`A`**，Name 填子域（例如 `cf`，对应完整域名 `cf.example.com`），IPv4 address 填你的 **VPS 真实 IP**，**Proxy status 必须打开橙色云朵（Proxied）**。
+  3. **设置 SSL/TLS 加密模式（最容易出错！）**：
+     * 进入 **SSL/TLS → Overview**，将加密模式设为 **`Full`（完全）**。
+     * ⚠️ **不要选 `Flexible`**（会无限重定向或连不上）；**使用脚本自动生成的自签证书时也不要选 `Full (Strict)`**（否则 CF 回源校验不通过，直接报 `526`）。
+     * 如需使用最高安全等级 **`Full (Strict)`**，请自行用 `acme.sh` 或 Cloudflare 后台 **SSL/TLS → Origin Server** 签发源站证书替换自签证书。
+  4. **确认端口与网络开关**：
+     * Cloudflare 免费版支持代理的 **HTTPS 回源端口**仅限：`443`、`2053`（脚本默认）、`2083`、`2087`、`2096`、`8443`；请确保云厂商安全组/防火墙已放行所选 TCP 端口。
+     * 进入 **Network（网络）**，建议确认 **HTTP/2** 与 **HTTP/3 (with QUIC)** 为开启状态。
+  5. **客户端导入与替换优选 IP / 优选域名**：
+     * 直接扫描或导入脚本生成的 `vless://` 链接即可使用默认 CF 节点；
+     * 如需提速，在客户端编辑该节点：**仅将「地址 (Address)」改为你的优选 IP 或优选域名**，**`Host` 和 `SNI` 必须保持为你在 Cloudflare 解析的域名（如 `cf.example.com`）不变**，端口保持 `2053`（或你所选 CF HTTPS 端口），且**绝不开启 `allowInsecure: true`**。
 * **客户端导入示例**：
   ```text
   vless://<UUID>@<优选域名或IP>:2053?type=xhttp&mode=auto&security=tls&path=%2Fvless-xhttp&host=cf.example.com&sni=cf.example.com#CF-XHTTP-优选
   ```
+* **常见报错速查**：
+
+  | 现象 / 状态码 | 常见原因 | 解决方法 |
+  | :--- | :--- | :--- |
+  | **`521 Web server is down`** | 云厂商安全组未放行端口，或 `x-ui` 服务未启动 | 控制台安全组放行 TCP `2053`（或自选端口），SSH 检查 `systemctl status x-ui` |
+  | **`522 Connection timed out`** | 回源超时，常见于 VPS IP 已丢包严重或端口填错 | 检查 DNS `A` 记录 IP 是否填错、端口是否与脚本监听端口一致 |
+  | **`525 SSL handshake failed`** | 源站未开启 TLS 或 CF SSL 模式选成 `Off` / `Flexible` | 将 Cloudflare **SSL/TLS** 改为 **`Full`** |
+  | **`526 Invalid SSL certificate`** | 源站是脚本自签证书，但 CF 设成了 `Full (Strict)` | 将 Cloudflare **SSL/TLS** 改为 **`Full`**，或换用正规/CF Origin 证书 |
+  | **导入后连不上 / 测速 `-1`** | 修改优选 IP 时误把 `Host` 或 `SNI` 也改成了 IP | 只改「地址 (Address)」，`Host` 与 `SNI` 必须填回你的域名 |
 
 ---
 
