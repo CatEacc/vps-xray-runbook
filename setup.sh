@@ -53,7 +53,7 @@ DIM="${ESC}[38;5;245m"
 NC="${R}"
 
 SCRIPT_VER=$(curl -fsSm 2 https://api.github.com/repos/CatEacc/vps-xray-runbook/releases/latest 2>/dev/null | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n 1 | cut -d'"' -f4 || true)
-SCRIPT_VER="${SCRIPT_VER:-v1.2.4}"
+SCRIPT_VER="${SCRIPT_VER:-v1.2.5}"
 
 print_cateacc_logo() {
     G1="${ESC}[38;5;46m"
