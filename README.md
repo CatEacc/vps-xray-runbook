@@ -12,15 +12,27 @@
 
 ---
 
-## 小白一键执行（四套方案交互菜单，回车默认端口 / 支持一键中转家宽）
+## 小白一键执行（提供「3x-ui 面板版」与「无面板纯手搓 JSON 版」双脚本）
 
-新机直接以 `root` 执行下方一键脚本，按提示输入 `1`～`4` 选择方案（**端口直接回车默认 `443`，也可手动输入任意端口**；默认幂等防重入，面板自动锁死 `127.0.0.1`）：
+### 方式一：3x-ui 可视化面板版（`setup.sh`，适合多客户管理、流量限额）
+
+新机直接以 `root` 执行下方一键脚本，按提示输入编号选择方案（**端口直接回车默认 `443`，也可手动输入任意端口**；默认幂等防重入，面板自动锁死 `127.0.0.1`）：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/setup.sh)
 ```
 
 ![CatEacc vps-xray-runbook 一键脚本终端界面](https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/xray_menu.png)
+
+### 方式二：无面板纯原生 Xray-core 手搓 JSON 版（`pure.sh`，对齐 RPRX 官方文档）
+
+不装任何面板、常驻仅约 **25MB 内存**，标准配置文件落盘 `/usr/local/etc/xray/config.json`（启动前自动执行 `xray run -test` 强校验），原生支持 **XHTTP + REALITY / Vision + REALITY / `mldsa65` 抗量子签名 / SS-2022 家宽落地与一键中转 / Cloudflare CDN / 只读家宽快检**；不跑脚本也可直接参考根目录标准模板 [`config.example.json`](config.example.json)：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/pure.sh)
+```
+
+![CatEacc vps-xray-runbook 无面板纯手搓 JSON 版终端界面](https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/xray_pure_menu.png)
 
 * **方案 1：`VLESS + REALITY`（支持一键中转家宽）**
   * 支持 RPRX 最新 **`XHTTP + REALITY`** 与全客户端通吃的 **`raw + REALITY + xtls-rprx-vision`**，端口回车默认 `443`（也可手填如 `8443` / 高位端口）；
