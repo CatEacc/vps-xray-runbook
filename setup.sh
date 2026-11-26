@@ -373,7 +373,7 @@ REGIONAL = {
     "SG": ("新加坡", [
         ("www.grab.com",          "Grab 东南亚出行"),
         ("www.changiairport.com", "新加坡樟宜机场"),
-        ("nus.edu.sg",            "新加坡国立大学"),
+        ("www.nus.edu.sg",        "新加坡国立大学"),
         ("www.smu.edu.sg",        "新加坡管理大学"),
         ("www.sutd.edu.sg",       "新加坡科技设计大学"),
     ]),
@@ -1310,19 +1310,25 @@ custom_rules = [
     and not (r.get('outboundTag') == 'blocked' and set(r.get('ip', [])) <= {'geoip:private', 'geoip:cn'} and not r.get('protocol') and not r.get('inboundTag') and not r.get('user'))
     and not (r.get('outboundTag') == 'blocked' and r.get('protocol') == ['bittorrent'] and not r.get('ip') and not r.get('domain'))
     and not (r.get('outboundTag') == 'blocked' and str(r.get('port', '')) == '25' and not r.get('ip') and not r.get('domain'))
+    and not (r.get('outboundTag') == 'direct' and r.get('domain') == ['geosite:google'] and not r.get('ip') and not r.get('inboundTag') and not r.get('user'))
     and not (inbound_tag_for_relay and r.get('inboundTag') == [inbound_tag_for_relay] and str(r.get('outboundTag', '')).startswith('out-res'))
 ]
 if relay_tag and inbound_tag_for_relay:
     custom_rules.append({'type': 'field', 'inboundTag': [inbound_tag_for_relay], 'outboundTag': relay_tag})
 
-cfg.setdefault('routing', {})['domainStrategy'] = 'IPOnDemand'
-cfg['routing']['rules'] = [
+has_relay_rule = any(str(r.get('outboundTag', '')).startswith('out-res') for r in custom_rules)
+base_rules = [
     {'type': 'field', 'inboundTag': ['api'], 'outboundTag': 'api'},
     {'type': 'field', 'outboundTag': 'blocked', 'ip': ['geoip:private']},
     {'type': 'field', 'outboundTag': 'blocked', 'protocol': ['bittorrent']},
     {'type': 'field', 'outboundTag': 'blocked', 'port': '25'},
-    {'type': 'field', 'outboundTag': 'blocked', 'ip': ['geoip:cn']},
-] + custom_rules
+]
+if not has_relay_rule:
+    base_rules.append({'type': 'field', 'domain': ['geosite:google'], 'outboundTag': 'direct'})
+base_rules.append({'type': 'field', 'outboundTag': 'blocked', 'ip': ['geoip:cn']})
+
+cfg.setdefault('routing', {})['domainStrategy'] = 'IPOnDemand'
+cfg['routing']['rules'] = base_rules + custom_rules
 
 for k, v in [
     ('xrayTemplateConfig', json.dumps(cfg, indent=2)),
@@ -1368,8 +1374,8 @@ table inet res_guard {
     }
 }
 EOF
-    nft -f /etc/nftables.d/res-guard.nft || true
-    cat << 'EOF' > /etc/systemd/system/res-guard.service
+    if nft -f /etc/nftables.d/res-guard.nft; then
+        cat << 'EOF' > /etc/systemd/system/res-guard.service
 [Unit]
 Description=Residential Landing Port Whitelist
 After=network-online.target
@@ -1382,7 +1388,11 @@ ExecStop=/usr/sbin/nft delete table inet res_guard
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload && systemctl enable res-guard.service >/dev/null 2>&1 || true
+        systemctl daemon-reload && systemctl enable res-guard.service >/dev/null 2>&1 || true
+        echo "  [OK] 家宽端口 ${LISTEN_PORT} 白名单已生效并配置开机自启 (res-guard.service)"
+    else
+        echo "  [警告] nftables 家宽白名单加载失败！请检查白名单 IP (${RES_WHITELIST_IP}) 格式或内核 nftables 支持！" >&2
+    fi
 fi
 
 # 方案 3：部署 Hysteria 2 + 20000-50000 端口跳跃

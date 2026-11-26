@@ -260,15 +260,19 @@ try:
 except Exception:
     pass
 POOLS = {
-    "US": [("www.discoverlosangeles.com","洛杉矶旅游局"),("www.caltech.edu","加州理工"),("www.stanford.edu","斯坦福大学"),("www.kernel.org","Linux内核"),("www.debian.org","Debian官网")],
-    "JP": [("www.kyoto-u.ac.jp","京都大学"),("www.u-tokyo.ac.jp","东京大学"),("www.nhk.or.jp","NHK官网"),("www.nintendo.co.jp","任天堂日本"),("www.sony.jp","索尼日本")],
-    "SG": [("www.nus.edu.sg","新加坡国立大学"),("www.smu.edu.sg","新加坡管理大学"),("www.sutd.edu.sg","新科大"),("www.dbs.com.sg","星展银行"),("www.singaporeair.com","新加坡航空")],
-    "HK": [("www.hku.hk","香港大学"),("www.cuhk.edu.hk","香港中文大学"),("www.ust.hk","香港科大"),("www.cityu.edu.hk","香港城大"),("www.polyu.edu.hk","香港理工")],
-    "DE": [("www.tum.de","慕尼黑工大"),("www.mpg.de","马普学会"),("www.bmw.de","宝马德国"),("www.heise.de","Heise科技"),("www.suse.com","SUSE官网")],
-    "GB": [("www.cam.ac.uk","剑桥大学"),("www.imperial.ac.uk","帝国理工"),("www.bbc.co.uk","BBC官网"),("www.ed.ac.uk","爱丁堡大学"),("www.manchester.ac.uk","曼大")],
+    "US": [("www.ebay.com","eBay国际电商"),("www.airbnb.com","Airbnb国际民宿"),("www.ups.com","UPS国际物流"),("www.stanford.edu","斯坦福大学"),("www.harvard.edu","哈佛大学")],
+    "CA": [("www.utoronto.ca","多伦多大学"),("www.ubc.ca","UBC大学"),("www.ebay.com","eBay国际电商"),("www.airbnb.com","Airbnb国际民宿"),("www.ups.com","UPS国际物流")],
+    "JP": [("www.sony.jp","索尼日本"),("www.yahoo.co.jp","日本雅虎"),("www.honda.co.jp","本田日本"),("www.yamaha.com","雅马哈国际"),("www.lovelive-anime.jp","日本动漫官网")],
+    "HK": [("www.mandarinoriental.com","香港文华东方"),("www.k11musea.com","香港K11"),("www.pacificplace.com.hk","香港太古广场"),("www.cityu.edu.hk","香港城大"),("www.hku.hk","香港大学")],
+    "SG": [("www.grab.com","Grab出行"),("www.changiairport.com","樟宜机场"),("www.nus.edu.sg","新加坡国立大学"),("www.smu.edu.sg","新加坡管理大学"),("www.sutd.edu.sg","新科大")],
+    "TW": [("www.asus.com","华硕国际"),("www.msi.com","微星国际"),("www.gigabyte.com","技嘉国际"),("www.evaair.com","长荣航空"),("www.gskill.com","芝奇内存")],
+    "KR": [("www.naver.com","韩国Naver"),("www.samsung.com","三星国际"),("www.koreanair.com","大韩航空"),("www.coupang.com","Coupang电商"),("www.cj.net","韩国CJ集团")],
+    "EU": [("www.adidas.com","德国阿迪达斯"),("www.nokia.com","芬兰诺基亚"),("www.mercedes-benz.com","梅赛德斯奔驰"),("www.tudelft.nl","代尔夫特理工"),("www.postgresql.org","PostgreSQL")],
+    "GB": [("www.virginatlantic.com","维珍航空"),("www.marksandspencer.com","玛莎百货"),("www.unilever.com","联合利华"),("www.arm.com","Arm官网"),("www.cam.ac.uk","剑桥大学")],
 }
-GLOBAL = [("addons.mozilla.org","Firefox扩展商店"),("www.gentoo.org","Gentoo官网"),("www.openssl.org","OpenSSL官网"),("www.archlinux.org","ArchLinux官网"),("www.kernel.org","Linux内核")]
-cands = [("REG", h, d) for h, d in POOLS.get(cc, POOLS["US"])] + [("GLB", h, d) for h, d in GLOBAL]
+GLOBAL = [("www.gentoo.org","Gentoo官网"),("www.openssl.org","OpenSSL官网"),("www.debian.org","Debian官网"),("www.kernel.org","Linux内核"),("addons.mozilla.org","Firefox扩展商店")]
+rk = cc if cc in ("US","CA","JP","HK","SG","TW","KR","GB") else ("EU" if cc in ("DE","NL","FR","CH","AT","SE","FI","PL","IT","ES","LU","IE","NO","DK","BE","CZ") else "US")
+cands = [("REG", h, d) for h, d in POOLS.get(rk, POOLS["US"])] + [("GLB", h, d) for h, d in GLOBAL]
 def probe(item):
     grp, host, desc = item
     ctx = ssl.create_default_context()
@@ -803,14 +807,22 @@ if relay_on and res_ip and res_port and res_pass:
 
 cfg["inbounds"] = inbounds
 cfg["outbounds"] = outbounds
+custom_rules = [
+    r for r in custom_rules
+    if not (r.get("outboundTag") == "direct" and r.get("domain") == ["geosite:google"] and not r.get("ip") and not r.get("inboundTag"))
+]
+has_relay_rule = any(str(r.get("outboundTag", "")).startswith("out-res-") for r in custom_rules)
+base_rules = [
+    {"type": "field", "outboundTag": "blocked", "ip": ["geoip:private"]},
+    {"type": "field", "outboundTag": "blocked", "protocol": ["bittorrent"]},
+    {"type": "field", "outboundTag": "blocked", "port": "25"},
+]
+if not has_relay_rule:
+    base_rules.append({"type": "field", "domain": ["geosite:google"], "outboundTag": "direct"})
+base_rules.append({"type": "field", "outboundTag": "blocked", "ip": ["geoip:cn"]})
 cfg["routing"] = {
     "domainStrategy": "IPOnDemand",
-    "rules": [
-        {"type": "field", "outboundTag": "blocked", "ip": ["geoip:private"]},
-        {"type": "field", "outboundTag": "blocked", "protocol": ["bittorrent"]},
-        {"type": "field", "outboundTag": "blocked", "port": "25"},
-        {"type": "field", "outboundTag": "blocked", "ip": ["geoip:cn"]},
-    ] + custom_rules,
+    "rules": base_rules + custom_rules,
 }
 
 tmp_cfg = cfg_path + ".new"
@@ -832,19 +844,43 @@ if [ "$MODE" = "1" ] && [ "$SUBMODE" = "3" ] && [ -n "$RES_WHITELIST_IP" ] && co
 table inet res_guard
 delete table inet res_guard
 table inet res_guard {
+    set trusted_relays_v4 {
+        type ipv4_addr
+        flags interval
+        elements = { 127.0.0.0/8, ${RES_WHITELIST_IP} }
+    }
     chain input {
         type filter hook input priority filter; policy accept;
         iifname "lo" accept
         ct state established,related accept
-        tcp dport ${LISTEN_PORT} ip saddr ${RES_WHITELIST_IP} accept
-        udp dport ${LISTEN_PORT} ip saddr ${RES_WHITELIST_IP} accept
+        tcp dport ${LISTEN_PORT} ip saddr @trusted_relays_v4 accept
+        udp dport ${LISTEN_PORT} ip saddr @trusted_relays_v4 accept
         tcp dport ${LISTEN_PORT} drop
         udp dport ${LISTEN_PORT} drop
     }
 }
 EOF
-    nft -f /etc/nftables.d/res-whitelist.nft
-    echo "  [白名单] 端口 ${LISTEN_PORT} 已锁定仅放行前置机 ${RES_WHITELIST_IP}"
+    if nft -f /etc/nftables.d/res-whitelist.nft; then
+        cat << 'EOF' > /etc/systemd/system/res-guard.service
+[Unit]
+Description=Xray Residential Landing Port Whitelist
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/res-whitelist.nft
+ExecStop=/usr/sbin/nft delete table inet res_guard
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload && systemctl enable res-guard.service >/dev/null 2>&1 || true
+        echo "  [OK] 家宽端口 ${LISTEN_PORT} 白名单已生效并配置开机自启 (res-guard.service)"
+    else
+        echo "  [警告] nftables 家宽白名单加载失败！请检查白名单 IP (${RES_WHITELIST_IP}) 格式或内核 nftables 支持！" >&2
+    fi
 fi
 
 systemctl enable --now xray
