@@ -34,6 +34,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 
 ![CatEacc vps-xray-runbook 无面板纯手搓 JSON 版终端界面](https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/xray_pure_menu.png)
 
+### 脚本核心模式速览（`setup.sh` 7 模式 / `pure.sh` 5 模式）
+
 * **方案 1：`VLESS + REALITY`（支持一键中转家宽）**
   * 支持 RPRX 最新 **`XHTTP + REALITY`** 与全客户端通吃的 **`raw + REALITY + xtls-rprx-vision`**，端口回车默认 `443`（也可手填如 `8443` / 高位端口）；
   * 内置 **9 大地区 100% 纯本土 X25519 SNI 自动测速 + 全球 5 站兜底池**（附中文用途说明，零云厂商 / 零银行 / 零运营商 / 零敏感政府站），选中后自动执行 **实时四重复检**（`TLS 1.3 + H2` / 非 CF / 无国内 CDN / 中国大陆可达）；
@@ -673,6 +675,7 @@ systemctl restart x-ui
          chain output {
              type filter hook output priority filter; policy accept;
              oifname "lo" accept
+             tcp dport 25 reject with tcp reset
              udp dport 443 counter reject
          }
      }
