@@ -117,8 +117,9 @@ if [ -z "$MODE" ]; then
     printf "  ${GREEN}[4]${R} ${WHITE}纯系统底层内核调优模式${R} ${ORANGE}· 零代理面板${R}\n"
     printf "      ${DIM}仅部署 BBR / 按内存分档缓冲 / 1GB Swap / MPTCP 防护 / Fail2ban${R}\n"
     printf "  ${GREEN}[5]${R} ${WHITE}一键回滚系统底层调优${R} ${DIM}· 恢复原厂内核/日志/Swap 快照${R}\n"
-    printf "  ${GREEN}[6]${R} ${WHITE}一键导出所有节点链接 & 面板访问命令${R} ${CYAN}· 只读${R}\n\n"
-    read -rp "$(printf "${YELLOW}  请输入方案编号 [1-6] (回车默认 1): ${R}")" MODE
+    printf "  ${GREEN}[6]${R} ${WHITE}一键导出所有节点链接 & 面板访问命令${R} ${CYAN}· 只读${R}\n"
+    printf "  ${GREEN}[7]${R} ${WHITE}本机家宽 / 商宽 / 机房 IP 与环境快检${R} ${SKY}· 只读 · 不测流媒体${R}\n\n"
+    read -rp "$(printf "${YELLOW}  请输入方案编号 [1-7] (回车默认 1): ${R}")" MODE
     MODE="${MODE:-1}"
 fi
 
@@ -677,8 +678,149 @@ print("==================================================================")
 EXPPY
         exit 0
         ;;
+    7)
+        echo ""
+        echo "=================================================================="
+        echo "  本机家宽 / 商宽 / 机房 IP 与环境快检（纯只读，不碰流媒体）"
+        echo "=================================================================="
+        SERVER_IP="$SERVER_IP" python3 - << 'ISPPY'
+import os, json, socket, subprocess, urllib.request
+
+ip = os.environ.get("SERVER_IP", "").strip()
+if not ip or ip == "未知":
+    for u in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+        try:
+            ip = urllib.request.urlopen(u, timeout=4).read().decode().strip()
+            if ip:
+                break
+        except Exception:
+            pass
+
+print(f"  公网 IPv4:   {ip or '获取失败'}")
+
+ptr = "NONE"
+if ip:
+    try:
+        ptr = socket.gethostbyaddr(ip)[0]
+    except Exception:
+        ptr = "NONE"
+
+ptr_low = ptr.lower()
+ptr_is_biz = any(k in ptr_low for k in (".biz.", "business", ".corp.", "-static-", "static."))
+ptr_is_res = any(k in ptr_low for k in (".res.", "home", "dyn", "dhcp", "pool", "lightspeed", "fios", "cpe."))
+if ptr == "NONE":
+    ptr_tag = "无反解（需结合下方双类型判断）"
+elif ptr_is_biz:
+    ptr_tag = "预警：疑似商宽前缀（含 .biz / business / static）"
+elif ptr_is_res:
+    ptr_tag = "住宅宽带特征"
+else:
+    ptr_tag = "常规反解"
+print(f"  rDNS / PTR:  {ptr}  [{ptr_tag}]")
+
+asn_str = org_str = isp_str = loc = ""
+is_dc = is_proxy = is_mobile = None
+try:
+    req = urllib.request.Request(
+        f"http://ip-api.com/json/{ip}?fields=status,countryCode,regionName,city,isp,org,as,hosting,proxy,mobile",
+        headers={"User-Agent": "CatEacc-ISP-Check/1.0"},
+    )
+    d = json.loads(urllib.request.urlopen(req, timeout=6).read().decode())
+    if d.get("status") == "success":
+        asn_str = d.get("as") or ""
+        isp_str = d.get("isp") or ""
+        org_str = d.get("org") or ""
+        loc = f"{d.get('countryCode', '')} / {d.get('regionName', '')} / {d.get('city', '')}".strip(" /")
+        is_dc = bool(d.get("hosting"))
+        is_proxy = bool(d.get("proxy"))
+        is_mobile = bool(d.get("mobile"))
+except Exception:
+    try:
+        d = json.loads(urllib.request.urlopen(f"https://ipinfo.io/{ip}/json", timeout=5).read().decode())
+        asn_str = d.get("org", "")
+        loc = f"{d.get('country', '')} / {d.get('region', '')} / {d.get('city', '')}".strip(" /")
+    except Exception:
+        pass
+
+print(f"  归属地区:    {loc or '未知'}")
+print(f"  ASN / 组织:  {asn_str or org_str or '未知'}")
+if isp_str or org_str:
+    print(f"  ISP / Org:   ISP={isp_str or '-'} | Org={org_str or '-'}")
+if is_dc is not None:
+    print(f"  属性标记:    hosting(机房)={is_dc} | proxy(代理)={is_proxy} | mobile(蜂窝)={is_mobile}")
+
+rdap_net = rdap_range = rdap_org = ""
+if ip:
+    try:
+        req = urllib.request.Request(f"https://rdap.org/ip/{ip}", headers={"User-Agent": "CatEacc-ISP-Check/1.0", "Accept": "application/rdap+json"})
+        rd = json.loads(urllib.request.urlopen(req, timeout=6).read().decode())
+        rdap_net = rd.get("name") or ""
+        s_ip, e_ip = rd.get("startAddress") or "", rd.get("endAddress") or ""
+        if s_ip and e_ip:
+            rdap_range = f"{s_ip} - {e_ip}"
+        for ent in (rd.get("entities") or []):
+            vcard = ent.get("vcardArray")
+            if isinstance(vcard, list) and len(vcard) > 1:
+                for item in vcard[1]:
+                    if isinstance(item, list) and len(item) >= 4 and item[0] == "fn":
+                        rdap_org = str(item[3])
+                        break
+            if rdap_org:
+                break
+    except Exception:
+        pass
+print(f"  RDAP 归属:   NetName={rdap_net or '查询超时'} | 组织={rdap_org or '-'} | 段={rdap_range or '-'}")
+
+virt = "unknown"
+try:
+    virt = subprocess.check_output(["systemd-detect-virt"], text=True, stderr=subprocess.DEVNULL).strip() or "none"
+except Exception:
+    pass
+hv_balloon = False
+try:
+    hv_balloon = "hv_balloon" in open("/proc/modules", encoding="utf-8", errors="ignore").read()
+except Exception:
+    pass
+virt_note = f"{virt}"
+if virt == "microsoft":
+    virt_note += " (Hyper-V 母鸡，hv_balloon=" + ("已加载/建议屏蔽" if hv_balloon else "未加载") + ")"
+print(f"  虚拟化环境:  {virt_note}")
+
+smtp_stat = "已封禁/不可达（安全）"
+try:
+    with socket.create_connection(("gmail-smtp-in.l.google.com", 25), timeout=2.5):
+        smtp_stat = "可连出（未封禁，建议跑本脚本封禁出站 TCP 25）"
+except Exception:
+    pass
+print(f"  出站 TCP 25: {smtp_stat}")
+
+print("------------------------------------------------------------------")
+dc_kw = ("cogent", "psinet", "hosting", "datacenter", "data center", "cloud", "server", "vps", "digitalocean", "amazon", "aws", "google", "oracle", "hetzner", "ovh", "vultr", "linode", "akamai", "choopa", "colocrossing", "multacom", "zenlayer", "dmit")
+comb_org = f"{asn_str} {isp_str} {org_str} {rdap_net} {rdap_org}".lower()
+looks_dc_org = any(k in comb_org for k in dc_kw)
+asn_tokens = {w for w in asn_str.lower().replace(",", " ").replace(".", " ").split() if len(w) >= 4 and not w.startswith("as")}
+rdap_low = f"{rdap_net} {rdap_org}".lower()
+is_broadcast_mismatch = bool(asn_tokens and rdap_org and not any(t in rdap_low for t in asn_tokens))
+
+if is_dc is True or looks_dc_org:
+    verdict = "[机房商业 VPS / 骨干网段] 建议作为前置迎宾/中转机（443 REALITY / CF CDN / Hy2 端口跳跃）"
+elif is_dc is False and ptr_is_biz:
+    verdict = "[运营商商宽段] 注意：非机房段但 PTR 含商宽特征（.biz / business / static），买住宅家宽建议换段"
+elif is_dc is False and not is_proxy and ptr_is_res and not is_broadcast_mismatch:
+    verdict = "[原生住宅家宽] 建议作为后端纯净落地机（选方案 1 -> 子模式 3 高位 SS-2022 + 白名单）"
+elif is_broadcast_mismatch:
+    verdict = "[疑似广播 IP / 非原生池] 注意：广播 ASN 与 RDAP 原始注册商不一致且无住宅 PTR，请复核 IPinfo 双字段"
+elif is_dc is False and not is_proxy:
+    verdict = "[疑似住宅/ISP 段] 无明显机房标记，建议再用 IPinfo 复核 asn.type 与 company.type 是否同为 isp"
+else:
+    verdict = "[混合/未知类型] 请结合上方 PTR 与 RDAP 归属综合判断"
+print(f"  综合建议:    {verdict}")
+print("==================================================================")
+ISPPY
+        exit 0
+        ;;
     *)
-        echo "[错误] 无效的方案编号: ${MODE}，仅支持 1 / 2 / 3 / 4 / 5 / 6"
+        echo "[错误] 无效的方案编号: ${MODE}，仅支持 1 / 2 / 3 / 4 / 5 / 6 / 7"
         exit 1
         ;;
 esac
