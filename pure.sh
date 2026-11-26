@@ -6,6 +6,7 @@
 # 规范: 100% 对齐 Project X / RPRX 官方文档 (XHTTP / Vision REALITY / mldsa65 / SS-2022)
 # ==============================================================================
 set -euo pipefail
+trap 'rm -rf /tmp/pure_result.txt /tmp/xray-pure' EXIT
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "[错误] 请使用 root 权限运行本脚本 (sudo bash pure.sh)"
@@ -32,7 +33,7 @@ PINK="${ESC}[38;5;205m"
 OS_INFO=$(grep -m1 '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "Linux")
 KERNEL_INFO=$(uname -r | cut -d- -f1)
 ARCH_INFO=$(uname -m)
-MEM_SHOW=$(free -m 2>/dev/null | awk '/Mem:/ {print $2}')
+MEM_SHOW=$(LC_ALL=C free -m 2>/dev/null | awk '/^Mem:/ {print $2}')
 MEM_SHOW="${MEM_SHOW:-0}"
 BBR_STAT=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
 MPTCP_STAT=$(sysctl -n net.mptcp.enabled 2>/dev/null || echo "n/a")
@@ -69,6 +70,20 @@ svc_badge() {
     else
         printf "${DIM}○ 未安装${R}"
     fi
+}
+
+validate_port() {
+    local p="$1" def="$2"
+    if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; then
+        echo "$p"
+    else
+        printf "  ${ORANGE}-> [提示] 端口 '%s' 非法，已自动使用默认端口 %s${R}\n" "$p" "$def" >&2
+        echo "$def"
+    fi
+}
+
+clean_domain() {
+    printf "%s" "$1" | sed -E 's#^https?://##; s#/.*$##; s#:[0-9]+$##' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
 }
 
 MODE="${1:-}"
@@ -136,7 +151,7 @@ try:
         pass
     cn_note, cn_warn = "国内探针暂跳过", ""
     try:
-        payload = json.dumps({"type": "http", "target": h, "locations": [{"country": "CN", "limit": 3}], "measurementOptions": {"protocol": "HTTPS", "port": 443, "request": {"method": "HEAD", "path": "/"}}}).encode()
+        payload = json.dumps({"type": "http", "target": h, "locations": [{"country": "CN"}], "limit": 2, "measurementOptions": {"protocol": "HTTPS", "port": 443, "request": {"method": "HEAD", "path": "/"}}}).encode()
         req = urllib.request.Request("https://api.globalping.io/v1/measurements", data=payload, headers={"Content-Type": "application/json", "User-Agent": "CatEacc-SNI-Check/1.0"})
         mid = json.loads(urllib.request.urlopen(req, timeout=5).read().decode()).get("id")
         if mid:
@@ -147,7 +162,9 @@ try:
                 if r.get("status") == "finished":
                     finished = r.get("results", [])
                     break
-            if finished:
+            if finished is None:
+                cn_warn = "中国大陆探针超时未响应(疑似被墙)"
+            elif finished:
                 ok_cnt, cn_cdn_ip = 0, ""
                 for item in finished:
                     res = item.get("result", {})
@@ -192,34 +209,50 @@ prompt_relay_ss() {
     ENABLE_RELAY="${ENABLE_RELAY:-n}"
     if [[ "$ENABLE_RELAY" =~ ^[Yy]$ ]]; then
         read -rp "请粘贴家宽 ss:// 链接（或直接输入家宽 IPv4）: " RES_INPUT
-        if [[ "$RES_INPUT" == ss://* ]]; then
+        if [[ "$RES_INPUT" == ss://* ]] && command -v python3 >/dev/null 2>&1; then
             local parsed
-            parsed=$(SS_URL="$RES_INPUT" python3 - << 'SSPY'
+            parsed=$(SS_URI="$RES_INPUT" python3 - << 'SSPY'
 import os, base64, urllib.parse
-u = os.environ["SS_URL"].strip().split("#", 1)[0]
-body = u[5:]
+u = os.environ.get("SS_URI", "").strip()
+body = u[5:].split("#", 1)[0].split("?", 1)[0].rstrip("/")
+def b64dec(s):
+    s = urllib.parse.unquote(s).strip()
+    pad = "=" * (-len(s) % 4)
+    for fn in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            return fn(s + pad).decode("utf-8")
+        except Exception:
+            pass
+    return s
+if "@" not in body:
+    body = b64dec(body)
 if "@" in body:
-    b64, hp = body.rsplit("@", 1)
-    b64 += "=" * (-len(b64) % 4)
-    cred = base64.urlsafe_b64decode(b64).decode()
-    pwd = cred.split(":", 1)[1] if ":" in cred else cred
+    cred, hp = body.rsplit("@", 1)
+    cred_dec = urllib.parse.unquote(cred)
+    if ":" not in cred_dec:
+        cred_dec = b64dec(cred_dec)
+    pwd = cred_dec.split(":", 1)[1] if ":" in cred_dec else cred_dec
     host, port = hp.rsplit(":", 1)
-else:
-    body += "=" * (-len(body) % 4)
-    dec = base64.urlsafe_b64decode(body).decode()
-    cred, hp = dec.rsplit("@", 1)
-    pwd = cred.split(":", 1)[1] if ":" in cred else cred
-    host, port = hp.rsplit(":", 1)
-print(f"{host.strip('[]')}|{port.split('/')[0]}|{pwd}")
+    port = port.strip()
+    if port.isdigit() and 1 <= int(port) <= 65535:
+        print(f"{host.strip('[]')}|{port}|{pwd.strip()}")
 SSPY
             ) || true
-            IFS='|' read -r RES_IP RES_PORT RES_SS_PASS <<< "$parsed"
-            echo "  [解析成功] 落地=${RES_IP}:${RES_PORT}"
+            if [ -n "$parsed" ]; then
+                IFS='|' read -r RES_IP RES_PORT RES_SS_PASS <<< "$parsed"
+                echo "  [解析成功] 落地=${RES_IP}:${RES_PORT}"
+                return 0
+            else
+                echo "  [提示] ss:// 链接解析失败，请改为分步输入："
+                read -rp "请输入后端家宽机 IP: " RES_IP
+            fi
         else
-            RES_IP="$RES_INPUT"
-            read -rp "请输入后端家宽 SS-2022 端口: " RES_PORT
-            read -rp "请输入后端家宽 SS-2022 密钥: " RES_SS_PASS
+            RES_IP=$(printf "%s" "$RES_INPUT" | tr -d '[:space:]')
         fi
+        read -rp "请输入后端家宽 SS-2022 端口: " RES_PORT
+        RES_PORT=$(validate_port "${RES_PORT:-30001}" 30001)
+        read -rp "请输入后端家宽 SS-2022 密钥: " RES_SS_PASS
+        RES_SS_PASS=$(printf "%s" "$RES_SS_PASS" | tr -d '[:space:]')
     fi
 }
 
@@ -236,11 +269,11 @@ case "$MODE" in
         if [ "$SUBMODE" = "3" ]; then
             RAND_PORT=$(shuf -i 20000-55000 -n 1 2>/dev/null || echo 38421)
             read -rp "请输入家宽落地监听高位端口 (回车随机 ${RAND_PORT}，勿用 80/443): " LISTEN_PORT
-            LISTEN_PORT="${LISTEN_PORT:-$RAND_PORT}"
-            read -rp "可选：输入允许连入的前置中转机公网 IP（直接回车跳过白名单）: " RES_WHITELIST_IP
+            LISTEN_PORT=$(validate_port "${LISTEN_PORT:-$RAND_PORT}" "$RAND_PORT")
+            read -rp "可选：输入允许连入的前置中转机公网 IP（直接回车跳过白名单，多个用逗号分隔）: " RES_WHITELIST_IP
         else
             read -rp "请输入 REALITY 监听端口 (回车默认 443，可自定义如 8443): " LISTEN_PORT
-            LISTEN_PORT="${LISTEN_PORT:-443}"
+            LISTEN_PORT=$(validate_port "${LISTEN_PORT:-443}" 443)
             printf "\n  ${CYAN}─── 请选择 REALITY 目标域名 (SNI) ───${R}\n"
             printf "  ${GREEN}[1]${R} ${WHITE}按机房地区自动测速优选${R} ${ORANGE}★ 推荐：本土 5 站 + 全球兜底池 + 实时四重复检${R}\n"
             printf "  ${GREEN}[2]${R} ${WHITE}addons.mozilla.org${R}     ${DIM}（免测默认：Firefox 扩展商店 · 纯海外无国内 CDN）${R}\n"
@@ -305,7 +338,11 @@ SNIPY
                             done
                             read -rp "  -> 请选择编号 [1-${#SNI_ARR[@]}] (回车默认 1): " PICK_IDX
                             PICK_IDX="${PICK_IDX:-1}"
-                            IFS='|' read -r REALITY_SNI _ _ <<< "${SNI_ARR[$((PICK_IDX-1))]}"
+                            if [[ "$PICK_IDX" =~ ^[0-9]+$ ]] && [ "$PICK_IDX" -ge 1 ] && [ "$PICK_IDX" -le "${#SNI_ARR[@]}" ]; then
+                                IFS='|' read -r REALITY_SNI _ _ <<< "${SNI_ARR[$((PICK_IDX-1))]}"
+                            else
+                                IFS='|' read -r REALITY_SNI _ _ <<< "${SNI_ARR[0]}"
+                            fi
                         fi
                     fi
                     verify_reality_sni "$REALITY_SNI"
@@ -313,10 +350,15 @@ SNIPY
                 2) REALITY_SNI="addons.mozilla.org" ;;
                 3) REALITY_SNI="www.gentoo.org" ;;
                 4)
-                    read -rp "请输入自定义 REALITY 域名: " REALITY_SNI
-                    REALITY_SNI="${REALITY_SNI:-addons.mozilla.org}"
+                    read -rp "请输入自定义 REALITY 域名: " SNI_CUSTOM
+                    REALITY_SNI=$(clean_domain "${SNI_CUSTOM:-addons.mozilla.org}")
+                    if [[ ! "$REALITY_SNI" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+                        echo "  [提示] 域名格式异常，自动回退 addons.mozilla.org"
+                        REALITY_SNI="addons.mozilla.org"
+                    fi
                     verify_reality_sni "$REALITY_SNI"
                     ;;
+                *) REALITY_SNI="addons.mozilla.org" ;;
             esac
             read -rp "是否开启 RPRX 最新抗量子 REALITY 签名 (mldsa65，需新版 v2rayN/v2rayNG)? [y/N]: " ENABLE_MLDSA65
             ENABLE_MLDSA65="${ENABLE_MLDSA65:-n}"
@@ -324,22 +366,38 @@ SNIPY
         fi
         ;;
     2)
-        read -rp "请输入 Cloudflare CDN 回源端口 (回车默认 2053): " LISTEN_PORT
-        LISTEN_PORT="${LISTEN_PORT:-2053}"
-        read -rp "请输入已绑定并开启小黄云的 CF 域名 (如 cf.example.com): " CF_DOMAIN
-        CF_DOMAIN="${CF_DOMAIN:-cf.example.com}"
+        read -rp "请输入 Cloudflare CDN 回源端口 (回车默认 2053，支持 443/2053/2083/2087/2096/8443): " LISTEN_PORT
+        LISTEN_PORT=$(validate_port "${LISTEN_PORT:-2053}" 2053)
+        case "$LISTEN_PORT" in
+            443|2053|2083|2087|2096|8443) ;;
+            *) echo "  [警告] 端口 ${LISTEN_PORT} 不在 Cloudflare 免费版 HTTPS 列表 (443/2053/2083/2087/2096/8443) 内，开启小黄云将无法回源！" ;;
+        esac
+        read -rp "请输入已绑定并开启小黄云的 CF 域名 (如 cf.example.com): " CF_IN
+        CF_DOMAIN=$(clean_domain "${CF_IN:-cf.example.com}")
+        if [[ ! "$CF_DOMAIN" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+            echo "[错误] Cloudflare 域名格式非法: ${CF_DOMAIN}"
+            exit 1
+        fi
         prompt_relay_ss
         ;;
     3)
         echo "  -> 将仅执行系统底层高并发内核调优 + 默认封禁出站 TCP 25（不安装 Xray）"
         ;;
-    4)
+    4|links)
         echo ""
         echo "=================================================================="
         echo "  本机纯原生 Xray-core 节点链接导出（纯只读）"
         echo "=================================================================="
         SERVER_IP="$SERVER_IP" XRAY_CFG="$XRAY_CFG" python3 - << 'EXPPY'
-import os, json, base64, urllib.parse
+import os, json, base64, urllib.parse, subprocess, shutil
+
+def print_qr(url):
+    if shutil.which("qrencode") and url:
+        try:
+            subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "1", url], check=False)
+        except Exception:
+            pass
+
 cfg_path = os.environ["XRAY_CFG"]
 ip = os.environ["SERVER_IP"]
 if not os.path.exists(cfg_path):
@@ -358,10 +416,12 @@ for inb in cfg.get("inbounds", []):
     net = st.get("network", "tcp")
     sec = st.get("security", "none")
     if proto == "vless":
+        url_net = "tcp" if net in ("raw", "tcp") else net
         for cl in s.get("clients", []):
             uid = cl.get("id", "")
             flow = cl.get("flow", "")
-            q = [f"type={net}", "encryption=none", f"security={sec}"]
+            conn_host = ip
+            q = [f"type={url_net}", "encryption=none", f"security={sec}"]
             if sec == "reality":
                 rs = st.get("realitySettings", {})
                 sni = (rs.get("serverNames") or [""])[0]
@@ -370,22 +430,27 @@ for inb in cfg.get("inbounds", []):
                 pbk = m.get("pbk", "<请查看部署输出公钥>")
                 q += [f"pbk={pbk}", "fp=chrome", f"sni={sni}", f"sid={sid}", "spx=%2F"]
                 if m.get("pqv"):
-                    q.append(f"pqv={m['pqv']}")
+                    q.append(f"pqv={urllib.parse.quote(m['pqv'], safe='')}")
             elif sec == "tls":
                 host = meta.get(tag, {}).get("host", "cf.example.com")
-                q += [f"sni={host}", f"host={host}"]
+                conn_host = host
+                q += [f"sni={host}", f"host={host}", "fp=chrome"]
             if net == "xhttp":
                 xh = st.get("xhttpSettings", {})
-                q += [f"path={urllib.parse.quote(xh.get('path', '/vless-xhttp'))}", f"mode={xh.get('mode', 'auto')}"]
+                q += [f"path={urllib.parse.quote(xh.get('path', '/vless-xhttp'), safe='')}", f"mode={xh.get('mode', 'auto')}"]
             if flow:
                 q.append(f"flow={flow}")
-            print(f"  [{tag}] vless://{uid}@{ip}:{port}?{'&'.join(q)}#{urllib.parse.quote(tag)}")
+            link = f"vless://{uid}@{conn_host}:{port}?{'&'.join(q)}#{urllib.parse.quote(tag)}"
+            print(f"  [{tag}] {link}")
+            print_qr(link)
             found += 1
     elif proto == "shadowsocks":
         method = s.get("method", "2022-blake3-aes-256-gcm")
         pwd = s.get("password", "")
         cred = base64.urlsafe_b64encode(f"{method}:{pwd}".encode()).decode().rstrip("=")
-        print(f"  [{tag}] ss://{cred}@{ip}:{port}#{urllib.parse.quote(tag)}")
+        link = f"ss://{cred}@{ip}:{port}#{urllib.parse.quote(tag)}"
+        print(f"  [{tag}] {link}")
+        print(f"    (家宽中转参数: IP={ip} | PORT={port} | PASS={pwd})")
         found += 1
 if not found:
     print("  (当前未检测到业务入站)")
@@ -495,20 +560,31 @@ esac
 # ------------------------------------------------------------------------------
 # 阶段一：系统底层优化、1GB Swap、日志收敛、Fail2ban、高并发内核栈与默认封出站 TCP 25
 # ------------------------------------------------------------------------------
-echo "[1/4] 更新依赖并配置原子钟 / 1GB Swap / Journald 50M / 默认封禁出站 TCP 25..."
+echo "[1/4] 更新依赖并配置原子钟 / 1GB Swap / Journald 50M / 默认封禁出站 TCP 25 / Fail2ban..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y && apt-get install -y curl wget unzip chrony nftables fail2ban python3 python3-systemd openssl qrencode || \
   apt-get install -y curl wget unzip chrony nftables fail2ban python3 python3-systemd openssl
 
-systemctl enable --now chrony
-chronyc makestep || true
+systemctl enable --now chrony 2>/dev/null || true
+chronyc makestep 2>/dev/null || true
 timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
 
 if [ ! -f /swapfile ]; then
-    fallocate -l 1G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=1024
-    chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile || true
+    if fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none; then
+        chmod 600 /swapfile
+        mkswap /swapfile >/dev/null 2>&1 || true
+        if ! swapon /swapfile 2>/dev/null; then
+            rm -f /swapfile
+            dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none 2>/dev/null || true
+            chmod 600 /swapfile
+            mkswap /swapfile >/dev/null 2>&1 || true
+            swapon /swapfile 2>/dev/null || rm -f /swapfile
+        fi
+    fi
 fi
-grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+if swapon --show=NAME --noheadings 2>/dev/null | grep -qx "/swapfile"; then
+    grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw,nofail 0 0" >> /etc/fstab
+fi
 
 cat << 'EOF' > /etc/systemd/journald.conf
 [Journal]
@@ -519,12 +595,35 @@ MaxRetentionSec=7day
 ForwardToSyslog=no
 EOF
 systemctl restart systemd-journald 2>/dev/null || true
+journalctl --rotate 2>/dev/null || true
+journalctl --vacuum-size=40M >/dev/null 2>&1 || true
 systemctl disable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service 2>/dev/null || true
 
 if [ -f /etc/gai.conf ]; then
     sed -i '/^precedence ::ffff:0:0\/96\s\+100/d' /etc/gai.conf
     echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
 fi
+
+mkdir -p /run/sshd
+SSH_PORTS=$( (sshd -T 2>/dev/null || true) | awk '$1=="port"{print $2}' | paste -sd, - )
+SSH_PORTS="${SSH_PORTS:-22}"
+cat << EOF > /etc/fail2ban/jail.local
+[DEFAULT]
+bantime = 86400
+bantime.increment = true
+bantime.factor = 2
+bantime.maxtime = 2592000
+findtime = 600
+maxretry = 3
+backend = systemd
+
+[sshd]
+enabled = true
+port = $SSH_PORTS
+mode = aggressive
+EOF
+systemctl enable --now fail2ban 2>/dev/null || true
+systemctl restart fail2ban 2>/dev/null || true
 
 if command -v nft >/dev/null 2>&1; then
     mkdir -p /etc/nftables.d
@@ -563,7 +662,7 @@ printf "tcp_bbr\nnf_conntrack\n" > /etc/modules-load.d/99-proxy.conf
 modprobe tcp_bbr 2>/dev/null || true
 modprobe nf_conntrack 2>/dev/null || true
 
-MEM_MB=$(free -m | awk '/Mem:/ {print $2}')
+MEM_MB=$(LC_ALL=C free -m 2>/dev/null | awk '/^Mem:/ {print $2}')
 if [ "${MEM_MB:-1000}" -le 700 ]; then
     RMEM_MAX=16777216; TCP_MAX=8388608; DEF_BUF=262144; CONN_MAX=65536; XRAY_BUF=32
 elif [ "${MEM_MB:-1000}" -lt 1500 ]; then
@@ -612,6 +711,13 @@ grep -vE '^\s*#|^\s*$' /etc/sysctl.d/99-zzz-proxy-tuning.conf | sed 's/^-//' | w
     sysctl -w "$(echo "$k" | xargs)=$(echo "$v" | xargs)" >/dev/null 2>&1 || true
 done
 
+cat << 'EOF' > /etc/security/limits.d/99-nofile.conf
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+EOF
+
 if [ "$MODE" = "3" ]; then
     echo "=================================================================="
     echo "  纯系统底层内核调优完成（未安装代理内核）！"
@@ -624,15 +730,15 @@ fi
 # ------------------------------------------------------------------------------
 echo "[3/4] 安装官方 Xray-core ${XRAY_VERSION} (${ARCH_INFO}) 与 systemd 守护进程..."
 case "$ARCH_INFO" in
-    x86_64)  XRAY_ARCH="64" ;;
-    aarch64) XRAY_ARCH="arm64-v8a" ;;
+    x86_64|amd64)   XRAY_ARCH="64" ;;
+    aarch64|arm64)  XRAY_ARCH="arm64-v8a" ;;
     *) echo "[错误] 暂不支持架构: ${ARCH_INFO}"; exit 1 ;;
 esac
 
 mkdir -p /tmp/xray-pure "$XRAY_SHARE" /usr/local/etc/xray
 curl -fsSL -o /tmp/xray-pure/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
 python3 -m zipfile -e /tmp/xray-pure/xray.zip /tmp/xray-pure/
-install -m 755 /tmp/xray-pure/xray "$XRAY_BIN"
+install -m 755 /tmp/xray-pure/xray "${XRAY_BIN}.new" && mv -f "${XRAY_BIN}.new" "$XRAY_BIN"
 install -m 644 /tmp/xray-pure/geoip.dat "${XRAY_SHARE}/geoip.dat"
 install -m 644 /tmp/xray-pure/geosite.dat "${XRAY_SHARE}/geosite.dat"
 rm -rf /tmp/xray-pure
@@ -662,18 +768,29 @@ systemctl daemon-reload
 # 阶段三：生成标准手搓 /usr/local/etc/xray/config.json 并执行 xray run -test 强校验
 # ------------------------------------------------------------------------------
 echo "[4/4] 生成标准手搓 JSON 并执行 xray run -test 强校验..."
-if [ "$MODE" = "2" ] && { [ ! -f /usr/local/etc/xray/cf.crt ] || [ ! -f /usr/local/etc/xray/cf.key ]; }; then
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
-      -keyout /usr/local/etc/xray/cf.key -out /usr/local/etc/xray/cf.crt \
-      -subj "/CN=${CF_DOMAIN}" -addext "subjectAltName=DNS:${CF_DOMAIN}" 2>/dev/null
-    chmod 600 /usr/local/etc/xray/cf.key
+if [ "$MODE" = "2" ]; then
+    NEED_CF="0"
+    if [ ! -f /usr/local/etc/xray/cf.crt ] || [ ! -f /usr/local/etc/xray/cf.key ]; then
+        NEED_CF="1"
+    elif ! openssl x509 -in /usr/local/etc/xray/cf.crt -noout -subject 2>/dev/null | grep -Fq "CN = ${CF_DOMAIN}" && \
+         ! openssl x509 -in /usr/local/etc/xray/cf.crt -noout -subject 2>/dev/null | grep -Fq "CN=${CF_DOMAIN}"; then
+        NEED_CF="1"
+    fi
+    if [ "$NEED_CF" = "1" ]; then
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
+          -keyout /usr/local/etc/xray/cf.key -out /usr/local/etc/xray/cf.crt \
+          -subj "/CN=${CF_DOMAIN}" -addext "subjectAltName=DNS:${CF_DOMAIN}" 2>/dev/null
+    fi
+    chmod 644 /usr/local/etc/xray/cf.crt && chmod 600 /usr/local/etc/xray/cf.key
 fi
 
+install -m 600 /dev/null /tmp/pure_result.txt
 MODE="$MODE" SUBMODE="$SUBMODE" LISTEN_PORT="$LISTEN_PORT" REALITY_SNI="$REALITY_SNI" \
 ENABLE_MLDSA65="$ENABLE_MLDSA65" CF_DOMAIN="$CF_DOMAIN" ENABLE_RELAY="$ENABLE_RELAY" \
 RES_IP="$RES_IP" RES_PORT="$RES_PORT" RES_SS_PASS="$RES_SS_PASS" XRAY_BUF="$XRAY_BUF" \
-SERVER_IP="$SERVER_IP" XRAY_BIN="$XRAY_BIN" XRAY_CFG="$XRAY_CFG" python3 - << 'GENPY'
+SERVER_IP="$SERVER_IP" XRAY_BIN="$XRAY_BIN" XRAY_CFG="$XRAY_CFG" python3 - << 'GENPY' > /tmp/pure_result.txt
 import os, json, uuid, secrets, subprocess, urllib.parse, base64
+os.umask(0o077)
 
 mode = os.environ["MODE"]
 submode = os.environ["SUBMODE"]
@@ -682,7 +799,9 @@ sni = os.environ["REALITY_SNI"]
 use_pq = os.environ.get("ENABLE_MLDSA65", "n").lower() == "y"
 cf_domain = os.environ["CF_DOMAIN"]
 relay_on = os.environ.get("ENABLE_RELAY", "n").lower() == "y"
-res_ip, res_port, res_pass = os.environ["RES_IP"], os.environ["RES_PORT"], os.environ["RES_SS_PASS"]
+res_ip = os.environ["RES_IP"].strip()
+res_port = os.environ["RES_PORT"].strip()
+res_pass = os.environ["RES_SS_PASS"].strip()
 buf_kb = int(os.environ.get("XRAY_BUF", "64"))
 server_ip = os.environ["SERVER_IP"]
 xray_bin = os.environ["XRAY_BIN"]
@@ -698,6 +817,10 @@ cfg["policy"] = {
         "0": {"handshake": 4, "connIdle": 120, "uplinkOnly": 2, "downlinkOnly": 5, "bufferSize": buf_kb}
     }
 }
+
+removed_tags = {x.get("tag") for x in cfg.get("inbounds", []) if x.get("port") == port and x.get("tag")}
+for rt in removed_tags:
+    meta.pop(rt, None)
 
 inbounds = [x for x in cfg.get("inbounds", []) if x.get("port") != port]
 outbounds = [x for x in cfg.get("outbounds", []) if x.get("tag") not in ("direct", "blocked")]
@@ -715,6 +838,8 @@ for r in old_rules:
         or str(r.get("port", "")) == "25"
     ):
         continue
+    if r.get("outboundTag") == "direct" and r.get("domain") == ["geosite:google"] and not r.get("ip") and not r.get("inboundTag"):
+        continue
     custom_rules.append(r)
 
 share_link = ""
@@ -730,6 +855,10 @@ if mode == "1" and submode == "3":
     })
     cred = base64.urlsafe_b64encode(f"2022-blake3-aes-256-gcm:{ss_pass}".encode()).decode().rstrip("=")
     share_link = f"ss://{cred}@{server_ip}:{port}#{urllib.parse.quote(tag)}"
+    print("RESULT_TYPE=RESIDENTIAL_SS")
+    print(f"SS_IP={server_ip}")
+    print(f"SS_PORT={port}")
+    print(f"SS_PASS={ss_pass}")
 elif mode == "1":
     uid = str(uuid.uuid4())
     sid = secrets.token_hex(4)
@@ -776,8 +905,9 @@ elif mode == "1":
     q = [f"type={'xhttp' if is_xhttp else 'tcp'}", "encryption=none", "security=reality", f"pbk={pub}", "fp=chrome", f"sni={sni}", f"sid={sid}", "spx=%2F"]
     if is_xhttp: q += ["path=%2Fvless-xhttp", "mode=auto"]
     else: q.append("flow=xtls-rprx-vision")
-    if pq_verify: q.append(f"pqv={pq_verify}")
+    if pq_verify: q.append(f"pqv={urllib.parse.quote(pq_verify, safe='')}")
     share_link = f"vless://{uid}@{server_ip}:{port}?{'&'.join(q)}#{urllib.parse.quote(tag)}"
+    print("RESULT_TYPE=LINK")
 elif mode == "2":
     uid = str(uuid.uuid4())
     tag = f"vless-cf-xhttp-{port}"
@@ -786,31 +916,38 @@ elif mode == "2":
         "settings": {"clients": [{"id": uid, "email": f"cf-{port}"}], "decryption": "none"},
         "streamSettings": {
             "network": "xhttp", "security": "tls",
-            "xhttpSettings": {"path": "/vless-xhttp", "mode": "auto"},
-            "tlsSettings": {"certificates": [{"certificateFile": "/usr/local/etc/xray/cf.crt", "keyFile": "/usr/local/etc/xray/cf.key"}]},
+            "xhttpSettings": {"path": "/vless-xhttp", "mode": "packet-up"},
+            "tlsSettings": {"certificates": [{"certificateFile": "/usr/local/etc/xray/cf.crt", "keyFile": "/usr/local/etc/xray/cf.key"}], "alpn": ["h2", "http/1.1"]},
             "sockopt": {"trustedXForwardedFor": ["CF-Connecting-IP", "X-Forwarded-For"], "tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20},
         },
         "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
     })
     meta[tag] = {"host": cf_domain}
-    share_link = f"vless://{uid}@{cf_domain}:{port}?type=xhttp&path=%2Fvless-xhttp&mode=auto&encryption=none&security=tls&sni={cf_domain}&host={cf_domain}#{urllib.parse.quote(tag)}"
+    share_link = f"vless://{uid}@{cf_domain}:{port}?type=xhttp&path=%2Fvless-xhttp&mode=packet-up&encryption=none&security=tls&sni={cf_domain}&host={cf_domain}&fp=chrome#{urllib.parse.quote(tag)}"
+    print("RESULT_TYPE=LINK")
+
+stale_in_tags = removed_tags | {tag}
+stale_ob_tags = {f"out-res-{t}" for t in stale_in_tags}
+outbounds = [x for x in outbounds if x.get("tag") not in stale_ob_tags]
+custom_rules = [
+    r for r in custom_rules
+    if not (set(r.get("inboundTag", [])) & stale_in_tags)
+    and r.get("outboundTag") not in stale_ob_tags
+]
 
 if relay_on and res_ip and res_port and res_pass:
     ob_tag = f"out-res-{tag}"
-    outbounds = [x for x in outbounds if x.get("tag") != ob_tag]
     outbounds.append({
         "tag": ob_tag, "protocol": "shadowsocks",
         "settings": {"servers": [{"address": res_ip, "port": int(res_port), "method": "2022-blake3-aes-256-gcm", "password": res_pass}]},
     })
-    custom_rules = [r for r in custom_rules if r.get("inboundTag") != [tag]]
     custom_rules.append({"type": "field", "inboundTag": [tag], "outboundTag": ob_tag})
+
+valid_ob_tags = {x.get("tag") for x in outbounds if x.get("tag")}
+custom_rules = [r for r in custom_rules if not (str(r.get("outboundTag", "")).startswith("out-res-") and r.get("outboundTag") not in valid_ob_tags)]
 
 cfg["inbounds"] = inbounds
 cfg["outbounds"] = outbounds
-custom_rules = [
-    r for r in custom_rules
-    if not (r.get("outboundTag") == "direct" and r.get("domain") == ["geosite:google"] and not r.get("ip") and not r.get("inboundTag"))
-]
 has_relay_rule = any(str(r.get("outboundTag", "")).startswith("out-res-") for r in custom_rules)
 base_rules = [
     {"type": "field", "outboundTag": "blocked", "ip": ["geoip:private"]},
@@ -828,6 +965,7 @@ cfg["routing"] = {
 tmp_cfg = cfg_path + ".new"
 with open(tmp_cfg, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
+os.chmod(tmp_cfg, 0o600)
 subprocess.check_call([xray_bin, "run", "-test", "-config", tmp_cfg])
 if os.path.exists(cfg_path):
     os.replace(cfg_path, cfg_path + ".bak")
@@ -840,28 +978,44 @@ GENPY
 
 if [ "$MODE" = "1" ] && [ "$SUBMODE" = "3" ] && [ -n "$RES_WHITELIST_IP" ] && command -v nft >/dev/null 2>&1; then
     mkdir -p /etc/nftables.d
-    cat << EOF > /etc/nftables.d/res-whitelist.nft
-table inet res_guard
-delete table inet res_guard
-table inet res_guard {
-    set trusted_relays_v4 {
-        type ipv4_addr
-        flags interval
-        elements = { 127.0.0.0/8, ${RES_WHITELIST_IP} }
-    }
-    chain input {
-        type filter hook input priority filter; policy accept;
-        iifname "lo" accept
-        ct state established,related accept
-        tcp dport ${LISTEN_PORT} ip saddr @trusted_relays_v4 accept
-        udp dport ${LISTEN_PORT} ip saddr @trusted_relays_v4 accept
-        tcp dport ${LISTEN_PORT} drop
-        udp dport ${LISTEN_PORT} drop
-    }
-}
-EOF
-    if nft -f /etc/nftables.d/res-whitelist.nft; then
-        cat << 'EOF' > /etc/systemd/system/res-guard.service
+    if LISTEN_PORT="$LISTEN_PORT" RES_WHITELIST_IP="$RES_WHITELIST_IP" python3 - << 'NFTPY'
+import os, re, ipaddress
+port = int(os.environ["LISTEN_PORT"])
+raw = os.environ.get("RES_WHITELIST_IP", "")
+tokens = [t.strip() for t in re.split(r"[,，\s]+", raw) if t.strip()]
+v4, v6 = ["127.0.0.0/8"], ["::1/128"]
+for t in tokens:
+    net = ipaddress.ip_network(t, strict=False)
+    if net.version == 4:
+        v4.append(str(net))
+    else:
+        v6.append(str(net))
+if len(v4) == 1 and len(v6) == 1:
+    raise SystemExit(1)
+lines = [
+    "table inet res_guard",
+    "delete table inet res_guard",
+    "table inet res_guard {",
+    f"    set trusted_relays_v4 {{ type ipv4_addr; flags interval; elements = {{ {', '.join(v4)} }}; }}",
+    f"    set trusted_relays_v6 {{ type ipv6_addr; flags interval; elements = {{ {', '.join(v6)} }}; }}",
+    "    chain input {",
+    "        type filter hook input priority filter; policy accept;",
+    '        iifname "lo" accept',
+    "        ct state established,related accept",
+    f"        tcp dport {port} ip saddr @trusted_relays_v4 accept",
+    f"        udp dport {port} ip saddr @trusted_relays_v4 accept",
+    f"        tcp dport {port} ip6 saddr @trusted_relays_v6 accept",
+    f"        udp dport {port} ip6 saddr @trusted_relays_v6 accept",
+    f"        tcp dport {port} drop",
+    f"        udp dport {port} drop",
+    "    }",
+    "}",
+]
+open("/etc/nftables.d/res-whitelist.nft", "w", encoding="utf-8").write("\n".join(lines) + "\n")
+NFTPY
+    then
+        if nft -f /etc/nftables.d/res-whitelist.nft; then
+            cat << 'EOF' > /etc/systemd/system/res-guard.service
 [Unit]
 Description=Xray Residential Landing Port Whitelist
 After=network-online.target
@@ -876,16 +1030,53 @@ ExecStop=/usr/sbin/nft delete table inet res_guard
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload && systemctl enable res-guard.service >/dev/null 2>&1 || true
-        echo "  [OK] 家宽端口 ${LISTEN_PORT} 白名单已生效并配置开机自启 (res-guard.service)"
+            systemctl daemon-reload && systemctl enable res-guard.service >/dev/null 2>&1 || true
+            echo "  [OK] 家宽端口 ${LISTEN_PORT} 白名单已生效并配置开机自启 (res-guard.service)"
+        else
+            echo "  [警告] nftables 家宽白名单加载失败！请检查内核 nftables 支持！" >&2
+        fi
     else
-        echo "  [警告] nftables 家宽白名单加载失败！请检查白名单 IP (${RES_WHITELIST_IP}) 格式或内核 nftables 支持！" >&2
+        echo "  [警告] 白名单 IP (${RES_WHITELIST_IP}) 含非法地址，已跳过防火墙白名单以免断联！" >&2
     fi
 fi
 
 systemctl enable --now xray
 systemctl restart xray
 sleep 1
-systemctl is-active --quiet xray && echo "[成功] 纯原生 Xray-core 已通过 xray run -test 并正常运行！"
+echo ""
+echo "=================================================================="
+if systemctl is-active --quiet xray; then
+    echo "  [成功] 纯原生 Xray-core (${XRAY_VERSION}) 已通过 xray run -test 并正常运行！"
+else
+    echo "  [警告] xray 服务未正常启动，请执行 journalctl -u xray -n 30 排查"
+fi
 echo "  配置文件路径: ${XRAY_CFG}（随时可直接手改 JSON）"
-echo "  只读查看节点: bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/pure.sh) 4"
+if [ -f /tmp/pure_result.txt ]; then
+    SHARE_URL=$(grep "^SHARE_LINK=" /tmp/pure_result.txt | cut -d'=' -f2- || true)
+    if grep -q "^RESULT_TYPE=RESIDENTIAL_SS" /tmp/pure_result.txt; then
+        echo "------------------------------------------------------------------"
+        echo "  【家宽落地 SS-2022 中转凭据】（请复制到前置优化机脚本中）："
+        grep -E "^SS_(IP|PORT|PASS)=" /tmp/pure_result.txt | sed 's/^/  /'
+        [ -n "$SHARE_URL" ] && echo "  分享链接: ${SHARE_URL}"
+    elif [ -n "$SHARE_URL" ]; then
+        echo "------------------------------------------------------------------"
+        echo "  【客户端导入链接】："
+        echo "  ${SHARE_URL}"
+        if command -v qrencode >/dev/null 2>&1; then
+            echo "  【手机扫码导入（Shadowrocket / v2rayNG / Stash）】："
+            qrencode -t ANSIUTF8 -m 1 "$SHARE_URL" || true
+        fi
+    fi
+    rm -f /tmp/pure_result.txt
+fi
+if [ "$MODE" = "2" ]; then
+    echo "------------------------------------------------------------------"
+    echo "  【Cloudflare 后台 4 步检查清单（小白照着点）】："
+    echo "  1. DNS 添加 A 记录: ${CF_DOMAIN} -> ${SERVER_IP}（务必开启小黄云 Proxied）"
+    echo "  2. SSL/TLS 设为: Full（自签证书勿选 Flexible 或 Full Strict，防 525/526）"
+    echo "  3. 云厂商安全组放行: TCP ${LISTEN_PORT}（CF 支持 443/2053/2083/2087/2096/8443）"
+    echo "  4. 客户端优选提速: 仅改「地址(Address)」为优选 IP/域名，Host 与 SNI 保持 ${CF_DOMAIN} 不变"
+fi
+echo "------------------------------------------------------------------"
+echo "  只读查看全部节点: bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/pure.sh) 4"
+echo "=================================================================="

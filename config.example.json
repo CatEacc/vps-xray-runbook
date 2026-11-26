@@ -106,6 +106,13 @@
       },
       {
         "type": "field",
+        "domain": [
+          "geosite:google"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
         "outboundTag": "blocked",
         "ip": [
           "geoip:cn"

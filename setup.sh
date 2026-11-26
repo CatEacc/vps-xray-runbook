@@ -3,11 +3,14 @@
 # 生产级 VPS 一键部署与调优脚本 (CatEacc/vps-xray-runbook)
 # 适用系统: Debian 11/12/13, Ubuntu 20.04/22.04/24.04 (AMD64 / ARM64)
 # 核心版本: 3x-ui v3.11.0 | Xray-core v26.11.9 | Hysteria 2 (Latest)
-# 四套方案:
+# 七大模式:
 #   1) VLESS + REALITY (XHTTP / Vision，回车默认 443，内置一键家宽落地/一键中转)
 #   2) Cloudflare CDN 优选 (VLESS + XHTTP + TLS，回车默认 2053)
 #   3) Hysteria 2 + 20000-50000 端口跳跃 (错开端口防冲突，可选一键中转家宽)
 #   4) 纯系统底层内核调优模式 (不装任何代理面板)
+#   5) 一键回滚系统底层调优
+#   6) 一键只读导出所有节点链接、二维码与 SSH 面板隧道命令
+#   7) 本机家宽 / 商宽 / 机房 IP 与环境只读快检
 # ==============================================================================
 
 set -euo pipefail
@@ -26,11 +29,12 @@ SERVER_IP=$(curl -s4m 5 https://api.ipify.org || curl -s4m 5 https://ipv4.icanha
 OS_INFO=$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-Linux}" || uname -s)
 KERNEL_INFO=$(uname -r | cut -d'-' -f1)
 ARCH_INFO=$(uname -m)
-MEM_SHOW=$(free -m | awk '/Mem:/ {print $2}')
+MEM_SHOW=$(LC_ALL=C free -m 2>/dev/null | awk '/^Mem:/ {print $2}')
+MEM_SHOW="${MEM_SHOW:-0}"
 BBR_STAT=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
 MPTCP_STAT=$(sysctl -n net.mptcp.enabled 2>/dev/null || echo "0")
 
-# 256 色丝滑渐变配色（参考 Neofetch / 现代云终端美学，深蓝与纯黑终端均极度惊艳）
+# 256 色丝滑渐变配色
 ESC="$(printf '\033')"
 R="${ESC}[0m"
 B="${ESC}[1m"
@@ -89,8 +93,22 @@ svc_badge() {
     fi
 }
 
+validate_port() {
+    local p="$1" def="$2"
+    if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; then
+        echo "$p"
+    else
+        printf "  ${ORANGE}-> [提示] 端口 '%s' 非法，已自动使用默认端口 %s${R}\n" "$p" "$def" >&2
+        echo "$def"
+    fi
+}
+
+clean_domain() {
+    printf "%s" "$1" | sed -E 's#^https?://##; s#/.*$##; s#:[0-9]+$##' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
+}
+
 # ------------------------------------------------------------------------------
-# 0. 四套方案交互菜单（也支持命令行传参: bash setup.sh [1|2|3|4]）
+# 0. 交互菜单（也支持命令行传参: bash setup.sh [1-7]）
 # ------------------------------------------------------------------------------
 MODE="${1:-}"
 if [ -z "$MODE" ]; then
@@ -115,7 +133,7 @@ if [ -z "$MODE" ]; then
     printf "  ${GREEN}[3]${R} ${WHITE}Hysteria 2 + 端口跳跃${R} ${PINK}· UDP 20000-50000 · 可选中转家宽${R}\n"
     printf "      ${DIM}精品线 QUIC BBR / 廉价线 Brutal，默认 UDP 8443 错开 TCP 443${R}\n"
     printf "  ${GREEN}[4]${R} ${WHITE}纯系统底层内核调优模式${R} ${ORANGE}· 零代理面板${R}\n"
-    printf "      ${DIM}仅部署 BBR / 按内存分档缓冲 / 1GB Swap / MPTCP 防护 / Fail2ban${R}\n"
+    printf "      ${DIM}仅部署 BBR / 按内存分档缓冲 / 1GB Swap / MPTCP 防护 / 默认封 TCP 25 / Fail2ban${R}\n"
     printf "  ${GREEN}[5]${R} ${WHITE}一键回滚系统底层调优${R} ${DIM}· 恢复原厂内核/日志/Swap 快照${R}\n"
     printf "  ${GREEN}[6]${R} ${WHITE}一键导出所有节点链接 & 面板访问命令${R} ${CYAN}· 只读${R}\n"
     printf "  ${GREEN}[7]${R} ${WHITE}本机家宽 / 商宽 / 机房 IP 与环境快检${R} ${SKY}· 只读 · 不测流媒体${R}\n\n"
@@ -214,7 +232,7 @@ try:
 except Exception as e:
     print(f"WARN|{e}")
 CHKPY
-)
+) || true
     if [[ "$chk_out" == OK\|* ]]; then
         printf "  ${GREEN}-> [实时复检通过]${R} ${WHITE}%s${R}: ${GREEN}%s${R}\n" "$target_sni" "${chk_out#OK|}"
     else
@@ -231,21 +249,26 @@ prompt_relay_target() {
 
     if [ "$RELAY_MODE" = "2" ]; then
         read -rp "$(printf "  ${SKY}-> 后端家宽机 SSH IP: ${R}")" RES_SSH_IP
+        RES_SSH_IP=$(printf "%s" "$RES_SSH_IP" | tr -d '[:space:]')
         read -rp "$(printf "  ${SKY}-> 后端家宽机 SSH 端口 (回车默认 22): ${R}")" RES_SSH_PORT
-        RES_SSH_PORT="${RES_SSH_PORT:-22}"
+        RES_SSH_PORT=$(validate_port "${RES_SSH_PORT:-22}" 22)
         read -rsp "$(printf "  ${SKY}-> 后端家宽机 root 密码 (输入不回显，仅内存生效不落盘): ${R}")" RES_SSH_PASS
         echo ""
-        if [ -n "$RES_SSH_IP" ] && [ -n "$RES_SSH_PASS" ]; then
+        local safe_src_ip=""
+        if [[ "$SERVER_IP" =~ ^[0-9a-fA-F.:]+$ ]]; then
+            safe_src_ip="$SERVER_IP"
+        fi
+        if [[ "$RES_SSH_IP" =~ ^[a-zA-Z0-9.:-]+$ ]] && [ -n "$RES_SSH_PASS" ]; then
             if ! command -v sshpass >/dev/null 2>&1; then
                 printf "  ${DIM}-> 正在安装 sshpass 以进行自动化对接...${R}\n"
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update -qq && apt-get install -y -qq sshpass >/dev/null 2>&1 || true
             fi
-            printf "  ${CYAN}-> 正在连接家宽机 %s:%s 自动部署 SS-2022 落地并添加本机白名单 (%s)...${R}\n" "$RES_SSH_IP" "$RES_SSH_PORT" "$SERVER_IP"
+            printf "  ${CYAN}-> 正在连接家宽机 %s:%s 自动部署 SS-2022 落地并添加本机白名单 (%s)...${R}\n" "$RES_SSH_IP" "$RES_SSH_PORT" "${safe_src_ip:-无}"
             local remote_out=""
             if command -v sshpass >/dev/null 2>&1; then
                 remote_out=$(SSHPASS="$RES_SSH_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p "$RES_SSH_PORT" "root@${RES_SSH_IP}" \
-                    "curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/setup.sh -o /tmp/_res_setup.sh && printf '3\n\n%s\n' '${SERVER_IP}' | bash /tmp/_res_setup.sh 1; rm -f /tmp/_res_setup.sh" 2>&1 || true)
+                    "curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/setup.sh -o /tmp/_res_setup.sh && printf '3\n\n%s\n' '${safe_src_ip}' | bash /tmp/_res_setup.sh 1; rm -f /tmp/_res_setup.sh" 2>&1 || true)
             fi
             unset RES_SSH_PASS SSHPASS
             RES_IP=$(printf "%s\n" "$remote_out" | grep -oE 'SS_IP=[^[:space:]]+' | tail -n 1 | cut -d'=' -f2- || true)
@@ -259,31 +282,40 @@ prompt_relay_target() {
             fi
         else
             unset RES_SSH_PASS SSHPASS
-            printf "  ${ORANGE}-> [提示] IP 或密码为空，自动切换为方式 1：${R}\n"
+            printf "  ${ORANGE}-> [提示] IP 格式非法或密码为空，自动切换为方式 1：${R}\n"
         fi
     fi
 
     read -rp "$(printf "  ${YELLOW}-> 请粘贴家宽 ss:// 链接，或直接输入家宽机 IP: ${R}")" SS_OR_IP
-    if [[ "$SS_OR_IP" == ss://* ]]; then
+    if [[ "$SS_OR_IP" == ss://* ]] && command -v python3 >/dev/null 2>&1; then
         local parsed
         parsed=$(SS_URI="$SS_OR_IP" python3 - << 'SSPY'
 import os, base64, urllib.parse
 u = os.environ.get("SS_URI", "").strip()
-u = u[5:].split("#", 1)[0].split("?", 1)[0]
-if "@" in u:
-    cred, hp = u.rsplit("@", 1)
-    cred = urllib.parse.unquote(cred)
-    if ":" not in cred:
-        pad = "=" * ((4 - len(cred) % 4) % 4)
+body = u[5:].split("#", 1)[0].split("?", 1)[0].rstrip("/")
+def b64dec(s):
+    s = urllib.parse.unquote(s).strip()
+    pad = "=" * (-len(s) % 4)
+    for fn in (base64.urlsafe_b64decode, base64.b64decode):
         try:
-            cred = base64.urlsafe_b64decode(cred + pad).decode("utf-8", "ignore")
+            return fn(s + pad).decode("utf-8")
         except Exception:
-            cred = base64.b64decode(cred + pad).decode("utf-8", "ignore")
-    pwd = cred.split(":", 1)[1] if ":" in cred else cred
+            pass
+    return s
+if "@" not in body:
+    body = b64dec(body)
+if "@" in body:
+    cred, hp = body.rsplit("@", 1)
+    cred_dec = urllib.parse.unquote(cred)
+    if ":" not in cred_dec:
+        cred_dec = b64dec(cred_dec)
+    pwd = cred_dec.split(":", 1)[1] if ":" in cred_dec else cred_dec
     host, port = hp.rsplit(":", 1)
-    print(f"{host.strip('[]')}|{port.strip()}|{pwd.strip()}")
+    port = port.strip()
+    if port.isdigit() and 1 <= int(port) <= 65535:
+        print(f"{host.strip('[]')}|{port}|{pwd.strip()}")
 SSPY
-)
+) || true
         if [ -n "$parsed" ]; then
             IFS='|' read -r RES_IP RES_PORT RES_SS_PASS <<< "$parsed"
             printf "  ${GREEN}-> [解析成功]${R} 目标家宽: ${CYAN}%s:%s${R} ${DIM}(密钥已自动提取)${R}\n" "$RES_IP" "$RES_PORT"
@@ -293,10 +325,12 @@ SSPY
             read -rp "$(printf "  ${SKY}-> 请输入后端家宽机 IP: ${R}")" RES_IP
         fi
     else
-        RES_IP="$SS_OR_IP"
+        RES_IP=$(printf "%s" "$SS_OR_IP" | tr -d '[:space:]')
     fi
     read -rp "$(printf "  ${SKY}-> 请输入后端家宽机 SS-2022 端口: ${R}")" RES_PORT
+    RES_PORT=$(validate_port "${RES_PORT:-30001}" 30001)
     read -rp "$(printf "  ${SKY}-> 请输入后端家宽机 SS-2022 密钥 (Base64): ${R}")" RES_SS_PASS
+    RES_SS_PASS=$(printf "%s" "$RES_SS_PASS" | tr -d '[:space:]')
 }
 
 case "$MODE" in
@@ -312,11 +346,11 @@ case "$MODE" in
         if [ "$REALITY_SUBMODE" = "3" ]; then
             DEF_PORT=$((20000 + RANDOM % 30000))
             read -rp "$(printf "  ${YELLOW}请输入家宽落地 SS-2022 监听端口 (回车默认随机高位端口 ${CYAN}${DEF_PORT}${YELLOW}): ${R}")" LISTEN_PORT
-            LISTEN_PORT="${LISTEN_PORT:-$DEF_PORT}"
+            LISTEN_PORT=$(validate_port "${LISTEN_PORT:-$DEF_PORT}" "$DEF_PORT")
             read -rp "$(printf "  ${YELLOW}请输入允许连入的前置优化机 IP（留空则不设白名单，多个用逗号分隔）: ${R}")" RES_WHITELIST_IP
         else
             read -rp "$(printf "  ${YELLOW}请输入 REALITY 监听端口 (回车默认 443，也可手动输入如 8443): ${R}")" LISTEN_PORT
-            LISTEN_PORT="${LISTEN_PORT:-443}"
+            LISTEN_PORT=$(validate_port "${LISTEN_PORT:-443}" 443)
             printf "\n  ${CYAN}─── 请选择 REALITY 回落目标域名 (SNI) ───${R}\n"
             printf "  ${GREEN}[1]${R} ${WHITE}按机房地区自动测速优选${R} ${ORANGE}★ 推荐：本土 5 站 + 全球兜底池 + 选后自动实时复检${R}\n"
             printf "  ${GREEN}[2]${R} ${WHITE}addons.mozilla.org${R}     ${DIM}（免测默认：Firefox 扩展商店 · 纯海外无国内 CDN）${R}\n"
@@ -445,7 +479,7 @@ if glb_res:
     for _, rtt, host, desc in glb_res[:5]:
         print(f"ITEM|{host}|{rtt:.1f}|{desc}")
 SNIPY
-)
+) || true
                         if [ -n "$SNI_LIST" ]; then
                             idx=1
                             SNI_ARR=()
@@ -460,16 +494,20 @@ SNIPY
                                     idx=$((idx + 1))
                                 fi
                             done <<< "$SNI_LIST"
-                            echo ""
-                            read -rp "$(printf "  ${YELLOW}-> 请选择编号 [1-${#SNI_ARR[@]}] (回车默认 1): ${R}")" PICK_IDX
-                            PICK_IDX="${PICK_IDX:-1}"
-                            if [[ "$PICK_IDX" =~ ^[0-9]+$ ]] && [ "$PICK_IDX" -ge 1 ] && [ "$PICK_IDX" -le "${#SNI_ARR[@]}" ]; then
-                                REALITY_SNI="${SNI_ARR[$((PICK_IDX - 1))]}"
+                            if [ "${#SNI_ARR[@]}" -gt 0 ]; then
+                                echo ""
+                                read -rp "$(printf "  ${YELLOW}-> 请选择编号 [1-${#SNI_ARR[@]}] (回车默认 1): ${R}")" PICK_IDX
+                                PICK_IDX="${PICK_IDX:-1}"
+                                if [[ "$PICK_IDX" =~ ^[0-9]+$ ]] && [ "$PICK_IDX" -ge 1 ] && [ "$PICK_IDX" -le "${#SNI_ARR[@]}" ]; then
+                                    REALITY_SNI="${SNI_ARR[$((PICK_IDX - 1))]}"
+                                else
+                                    REALITY_SNI="${SNI_ARR[0]}"
+                                fi
+                                printf "  ${ORANGE}-> 已选定目标 SNI: ${WHITE}%s${R}\n" "$REALITY_SNI"
+                                verify_reality_sni "$REALITY_SNI"
                             else
-                                REALITY_SNI="${SNI_ARR[0]}"
+                                REALITY_SNI="addons.mozilla.org"
                             fi
-                            printf "  ${ORANGE}-> 已选定目标 SNI: ${WHITE}%s${R}\n" "$REALITY_SNI"
-                            verify_reality_sni "$REALITY_SNI"
                         else
                             printf "  ${ORANGE}-> [提示] 测速未命中可用站点，自动回退 addons.mozilla.org${R}\n"
                             REALITY_SNI="addons.mozilla.org"
@@ -483,7 +521,11 @@ SNIPY
                 3) REALITY_SNI="www.gentoo.org" ;;
                 4)
                     read -rp "$(printf "  ${YELLOW}-> 请输入自定义目标域名 (如 www.example.com): ${R}")" SNI_CUSTOM
-                    REALITY_SNI="${SNI_CUSTOM:-addons.mozilla.org}"
+                    REALITY_SNI=$(clean_domain "${SNI_CUSTOM:-addons.mozilla.org}")
+                    if [[ ! "$REALITY_SNI" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+                        printf "  ${ORANGE}-> [提示] 域名格式异常，已回退 addons.mozilla.org${R}\n"
+                        REALITY_SNI="addons.mozilla.org"
+                    fi
                     verify_reality_sni "$REALITY_SNI"
                     ;;
                 *) REALITY_SNI="addons.mozilla.org" ;;
@@ -496,14 +538,22 @@ SNIPY
         fi
         ;;
     2)
-        read -rp "$(printf "  ${YELLOW}请输入 Cloudflare 回源端口 (回车默认 2053，支持 443/2053/2083/8443): ${R}")" LISTEN_PORT
-        LISTEN_PORT="${LISTEN_PORT:-2053}"
+        read -rp "$(printf "  ${YELLOW}请输入 Cloudflare 回源端口 (回车默认 2053，支持 443/2053/2083/2087/2096/8443): ${R}")" LISTEN_PORT
+        LISTEN_PORT=$(validate_port "${LISTEN_PORT:-2053}" 2053)
+        case "$LISTEN_PORT" in
+            443|2053|2083|2087|2096|8443) ;;
+            *) printf "  ${ORANGE}-> [警告] 端口 %s 不在 Cloudflare 免费版 HTTPS 端口列表 (443/2053/2083/2087/2096/8443) 中，开启小黄云将无法回源！${R}\n" "$LISTEN_PORT" ;;
+        esac
         read -rp "$(printf "  ${YELLOW}请输入 Cloudflare CDN 域名 (如 cf.example.com): ${R}")" CF_IN
-        CF_DOMAIN="${CF_IN:-cf.example.com}"
+        CF_DOMAIN=$(clean_domain "${CF_IN:-cf.example.com}")
+        if [[ ! "$CF_DOMAIN" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+            echo "[错误] Cloudflare 域名格式非法: ${CF_DOMAIN}"
+            exit 1
+        fi
         ;;
     3)
         read -rp "$(printf "  ${YELLOW}请输入 Hysteria 2 本地 UDP 监听端口 (回车默认 8443 以错开 TCP 443，也可填 443): ${R}")" LISTEN_PORT
-        LISTEN_PORT="${LISTEN_PORT:-8443}"
+        LISTEN_PORT=$(validate_port "${LISTEN_PORT:-8443}" 8443)
         read -rp "$(printf "  ${YELLOW}是否为廉价高丢包线路开启 Brutal？(CN2/9929 精品线强烈选 n) [y/N]: ${R}")" HY2_BRUTAL
         HY2_BRUTAL="${HY2_BRUTAL:-n}"
         read -rp "$(printf "  ${YELLOW}是否一键中转到后端海外家宽机？[y/N]: ${R}")" ENABLE_RELAY
@@ -533,6 +583,9 @@ SNIPY
         if [ -f "${BACKUP_DIR}/journald.conf.bak" ]; then
             cp -a "${BACKUP_DIR}/journald.conf.bak" /etc/systemd/journald.conf
             systemctl restart systemd-journald 2>/dev/null || true
+        elif [ -f /etc/systemd/journald.conf ] && [ -f "${BACKUP_DIR}/snapshot.done" ]; then
+            rm -f /etc/systemd/journald.conf
+            systemctl restart systemd-journald 2>/dev/null || true
         fi
         if [ -f "${BACKUP_DIR}/99-nofile.conf.bak" ]; then
             cp -a "${BACKUP_DIR}/99-nofile.conf.bak" /etc/security/limits.d/99-nofile.conf
@@ -556,7 +609,8 @@ SNIPY
         ;;
     6|links)
         echo ""
-        SSH_PORT_SHOW=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}' || true)
+        mkdir -p /run/sshd 2>/dev/null || true
+        SSH_PORT_SHOW=$( (sshd -T 2>/dev/null || true) | awk '$1=="port"{print $2; exit}' )
         SSH_PORT_SHOW="${SSH_PORT_SHOW:-22}"
         SERVER_IP="$SERVER_IP" SSH_PORT_SHOW="$SSH_PORT_SHOW" python3 - << 'EXPPY'
 import sqlite3, json, os, subprocess, urllib.parse, base64, shutil
@@ -582,44 +636,53 @@ if os.path.exists(db_path):
     for remark, port, proto, s_str, st_str, enable in c.execute(
         "SELECT remark, port, protocol, settings, stream_settings, enable FROM inbounds"
     ).fetchall():
-        if not enable:
+        if not enable or proto == 'socks':
             continue
         s = json.loads(s_str or '{}')
         st = json.loads(st_str or '{}')
         if proto == 'vless':
-            clients = s.get('clients', [])
+            clients = [cl for cl in s.get('clients', []) if cl.get('enable', True)]
             if not clients:
                 continue
-            u = clients[0].get('id', '')
-            flow = clients[0].get('flow', '')
             net = st.get('network', 'tcp')
             sec = st.get('security', 'none')
-            r_enc = urllib.parse.quote(remark or f'VLESS-{port}')
-            if sec == 'reality':
-                rs = st.get('realitySettings', {})
-                pbk = rs.get('settings', {}).get('publicKey', '')
-                sni = (rs.get('serverNames') or ['addons.mozilla.org'])[0]
-                sid = (rs.get('shortIds') or [''])[0]
-                if net == 'xhttp':
-                    path = urllib.parse.quote(st.get('xhttpSettings', {}).get('path', '/vless-xhttp'), safe='')
-                    link = f"vless://{u}@{server_ip}:{port}?type=xhttp&path={path}&mode=auto&security=reality&pbk={pbk}&fp=chrome&sni={sni}&sid={sid}&spx=%2F#{r_enc}"
-                else:
-                    fl = f"&flow={flow}" if flow else ""
-                    link = f"vless://{u}@{server_ip}:{port}?type=tcp&security=reality&pbk={pbk}&fp=chrome&sni={sni}&sid={sid}&spx=%2F{fl}#{r_enc}"
-                print(f"  [{remark}] {link}")
-                print_qr(link)
-                found += 1
-            elif sec == 'tls':
-                sni = st.get('tlsSettings', {}).get('serverName', server_ip)
-                if net == 'xhttp':
-                    path = urllib.parse.quote(st.get('xhttpSettings', {}).get('path', '/vless-xhttp'), safe='')
-                    link = f"vless://{u}@{sni}:{port}?type=xhttp&path={path}&mode=auto&host={sni}&security=tls&sni={sni}#{r_enc}"
-                else:
-                    path = urllib.parse.quote(st.get('wsSettings', {}).get('path', '/'), safe='')
-                    link = f"vless://{u}@{sni}:{port}?type={net}&path={path}&host={sni}&security=tls&sni={sni}#{r_enc}"
-                print(f"  [{remark}] {link}")
-                print_qr(link)
-                found += 1
+            for idx_c, cl in enumerate(clients):
+                u = cl.get('id', '')
+                flow = cl.get('flow', '')
+                label = remark if len(clients) == 1 else f"{remark}-{cl.get('email') or idx_c+1}"
+                r_enc = urllib.parse.quote(label or f'VLESS-{port}')
+                if sec == 'reality':
+                    rs = st.get('realitySettings', {})
+                    rs_set = rs.get('settings', {})
+                    pbk = rs_set.get('publicKey', '')
+                    pqv = rs_set.get('mldsa65Verify', '')
+                    sni = (rs.get('serverNames') or ['addons.mozilla.org'])[0]
+                    sid = (rs.get('shortIds') or [''])[0]
+                    pq_str = f"&pqv={urllib.parse.quote(pqv, safe='')}" if pqv else ""
+                    if net == 'xhttp':
+                        xh = st.get('xhttpSettings', {})
+                        path = urllib.parse.quote(xh.get('path', '/vless-xhttp'), safe='')
+                        xmode = xh.get('mode', 'auto')
+                        link = f"vless://{u}@{server_ip}:{port}?type=xhttp&path={path}&mode={xmode}&security=reality&pbk={pbk}&fp=chrome&sni={sni}&sid={sid}&spx=%2F{pq_str}#{r_enc}"
+                    else:
+                        fl = f"&flow={flow}" if flow else ""
+                        link = f"vless://{u}@{server_ip}:{port}?type=tcp&security=reality&pbk={pbk}&fp=chrome&sni={sni}&sid={sid}&spx=%2F{fl}{pq_str}#{r_enc}"
+                    print(f"  [{label}] {link}")
+                    print_qr(link)
+                    found += 1
+                elif sec == 'tls':
+                    sni = st.get('tlsSettings', {}).get('serverName', server_ip)
+                    if net == 'xhttp':
+                        xh = st.get('xhttpSettings', {})
+                        path = urllib.parse.quote(xh.get('path', '/vless-xhttp'), safe='')
+                        xmode = xh.get('mode', 'packet-up')
+                        link = f"vless://{u}@{sni}:{port}?type=xhttp&path={path}&mode={xmode}&host={sni}&security=tls&sni={sni}&fp=chrome#{r_enc}"
+                    else:
+                        path = urllib.parse.quote(st.get('wsSettings', {}).get('path', '/'), safe='')
+                        link = f"vless://{u}@{sni}:{port}?type={net}&path={path}&host={sni}&security=tls&sni={sni}&fp=chrome#{r_enc}"
+                    print(f"  [{label}] {link}")
+                    print_qr(link)
+                    found += 1
         elif proto == 'shadowsocks':
             method = s.get('method', '')
             pwd = s.get('password', '')
@@ -629,7 +692,7 @@ if os.path.exists(db_path):
                 print(f"    (家宽中转参数: IP={server_ip} | PORT={port} | PASS={pwd})")
                 found += 1
 
-    kv = dict(c.execute("SELECT key, value FROM settings WHERE key IN ('webPort','webBasePath','webListen')").fetchall())
+    kv = dict(c.execute("SELECT key, value FROM settings WHERE key IN ('webPort','webBasePath','webListen','webCertFile')").fetchall())
     conn.close()
 else:
     kv = {}
@@ -637,7 +700,7 @@ else:
 if os.path.exists('/etc/hysteria/config.yaml'):
     hy_port = '8443'
     hy_pass = ''
-    for line in open('/etc/hysteria/config.yaml'):
+    for line in open('/etc/hysteria/config.yaml', encoding='utf-8', errors='ignore'):
         ls = line.strip()
         if ls.startswith('listen:'):
             hy_port = ls.split(':')[-1].strip()
@@ -662,18 +725,22 @@ if not found:
     print("  (当前未检测到已启用的节点)")
 
 if kv:
-    wport = kv.get('webPort', '2053')
-    wbase = kv.get('webBasePath', '/')
+    wport = kv.get('webPort', '54321').strip()
+    wbase = kv.get('webBasePath', '/').strip()
     if not wbase.startswith('/'):
         wbase = '/' + wbase
+    scheme = 'https' if kv.get('webCertFile', '').strip() else 'http'
+    p_flag = f"-p {ssh_port} " if ssh_port != '22' else ""
     print("")
     print("==================================================================")
-    print("  【3x-ui 面板安全访问指南（面板已锁死 127.0.0.1）】")
+    print(f"  【3x-ui 面板安全访问指南（面板已锁死 127.0.0.1:{wport}）】")
     print("==================================================================")
-    print("  1) 在你本地电脑终端执行以下命令建立加密隧道（保持窗口不关）：")
-    print(f"     ssh -N -L 20530:127.0.0.1:{wport} root@{server_ip} -p {ssh_port}")
-    print("  2) 然后本地浏览器直接打开：")
-    print(f"     https://127.0.0.1:20530{wbase}")
+    print("  第 1 步：在【自己电脑】的 CMD / PowerShell / Mac 终端（不要在 VPS 里敲！）只复制运行下面这行：")
+    print("")
+    print(f"  ssh {p_flag}-L {wport}:127.0.0.1:{wport} root@{server_ip}")
+    print("")
+    print("  第 2 步：输入 VPS 密码登录并保持窗口别关，然后用电脑浏览器打开：")
+    print(f"  {scheme}://127.0.0.1:{wport}{wbase}")
 print("==================================================================")
 EXPPY
         exit 0
@@ -687,7 +754,7 @@ EXPPY
 import os, json, socket, subprocess, urllib.request
 
 ip = os.environ.get("SERVER_IP", "").strip()
-if not ip or ip == "未知":
+if not ip or ip in ("未知", "YOUR_SERVER_IP"):
     for u in ("https://api.ipify.org", "https://ifconfig.me/ip"):
         try:
             ip = urllib.request.urlopen(u, timeout=4).read().decode().strip()
@@ -826,7 +893,7 @@ ISPPY
 esac
 
 # ------------------------------------------------------------------------------
-# 阶段一：改前自动原厂快照 + 系统底层优化、Swap 兜底、日志收敛、Fail2ban 与高并发内核栈
+# 阶段一：改前自动原厂快照 + 系统底层优化、Swap 兜底、日志收敛、TCP 25 封禁与 Fail2ban
 # ------------------------------------------------------------------------------
 BACKUP_DIR="/var/backups/vps-xray-tuning"
 if [ ! -f "${BACKUP_DIR}/snapshot.done" ]; then
@@ -861,28 +928,74 @@ fi
 
 echo "[1/5] 更新系统组件并安装基础依赖..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y && apt-get upgrade -y
-apt-get install -y curl wget unzip chrony iptables nftables iptables-persistent sqlite3 fail2ban python3 python3-systemd openssl qrencode || \
-  apt-get install -y curl wget unzip chrony iptables nftables iptables-persistent sqlite3 fail2ban python3 python3-systemd openssl
+apt-get update -y && apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade -y
+apt-get install -y curl wget unzip chrony cron iptables nftables iptables-persistent sqlite3 fail2ban python3 python3-systemd openssl qrencode || \
+  apt-get install -y curl wget unzip chrony cron iptables nftables iptables-persistent sqlite3 fail2ban python3 python3-systemd openssl
 
-echo "[2/5] 配置原子钟对时、1GB Swap 兜底、日志限额与 SSH/Fail2ban 加固..."
-systemctl enable --now chrony
-chronyc makestep || true
+echo "[2/5] 配置原子钟对时、1GB Swap 兜底、默认封禁出站 TCP 25、日志限额与 SSH/Fail2ban 加固..."
+systemctl enable --now chrony 2>/dev/null || true
+chronyc makestep 2>/dev/null || true
 timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
 systemctl restart cron 2>/dev/null || true
 
 if [ ! -f /swapfile ]; then
-    fallocate -l 1G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=1024
-    chmod 600 /swapfile
-    mkswap /swapfile
-    swapon /swapfile || true
-    touch "${BACKUP_DIR}/swap_created_by_script"
+    if fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none; then
+        chmod 600 /swapfile
+        mkswap /swapfile >/dev/null 2>&1 || true
+        if swapon /swapfile 2>/dev/null; then
+            touch "${BACKUP_DIR}/swap_created_by_script"
+        else
+            rm -f /swapfile
+            dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none 2>/dev/null || true
+            chmod 600 /swapfile
+            mkswap /swapfile >/dev/null 2>&1 || true
+            if swapon /swapfile 2>/dev/null; then
+                touch "${BACKUP_DIR}/swap_created_by_script"
+            else
+                rm -f /swapfile
+                echo "  [提示] 当前虚拟化/文件系统不支持挂载 Swap，已自动跳过。"
+            fi
+        fi
+    fi
 fi
-grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
-if [ -f /swap.img ] && [ "$(stat -c%s /swap.img 2>/dev/null || echo 1073741824)" -lt 943718400 ]; then
-    swapoff /swap.img 2>/dev/null || true
-    sed -i '\|/swap\.img|d' /etc/fstab
-    rm -f /swap.img
+if swapon --show=NAME --noheadings 2>/dev/null | grep -qx "/swapfile"; then
+    grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw,nofail 0 0" >> /etc/fstab
+    if [ -f /swap.img ] && [ "$(stat -c%s /swap.img 2>/dev/null || echo 1073741824)" -lt 943718400 ]; then
+        swapoff /swap.img 2>/dev/null || true
+        sed -i '\|/swap\.img|d' /etc/fstab
+        rm -f /swap.img
+    fi
+fi
+
+if command -v nft >/dev/null 2>&1; then
+    mkdir -p /etc/nftables.d
+    cat << 'EOF' > /etc/nftables.d/smtp-guard.nft
+table inet smtp_guard
+delete table inet smtp_guard
+table inet smtp_guard {
+    chain output {
+        type filter hook output priority filter; policy accept;
+        tcp dport 25 reject with tcp reset
+    }
+}
+EOF
+    nft -f /etc/nftables.d/smtp-guard.nft 2>/dev/null || true
+    cat << 'EOF' > /etc/systemd/system/smtp-guard.service
+[Unit]
+Description=Block Outbound TCP 25 (SMTP Anti-Spam)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/smtp-guard.nft
+ExecStop=/usr/sbin/nft delete table inet smtp_guard
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload && systemctl enable smtp-guard.service >/dev/null 2>&1 || true
 fi
 
 cat << 'EOF' > /etc/systemd/journald.conf
@@ -916,18 +1029,17 @@ elif systemctl is-active --quiet systemd-resolved 2>/dev/null; then
     systemctl restart systemd-resolved 2>/dev/null || true
 fi
 
+# 开启 SSH 公钥登录；注意不盲目静默关闭密码登录（防止 AWS/Oracle cloud-init 占位符公钥把密码用户锁在门外）
+mkdir -p /run/sshd
 sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
 grep -q "^PubkeyAuthentication yes" /etc/ssh/sshd_config || echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
-if [ -s /root/.ssh/authorized_keys ] || [ -s ~/.ssh/authorized_keys ]; then
-    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
-    grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config || echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
+if sshd -t 2>/dev/null; then
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 fi
-sshd -t && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true)
 
-SSH_PORTS=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2}' | paste -sd, -)
-SSH_PORTS=${SSH_PORTS:-22}
+SSH_PORTS=$( (sshd -T 2>/dev/null || true) | awk '$1=="port"{print $2}' | paste -sd, - )
+SSH_PORTS="${SSH_PORTS:-22}"
 cat << EOF > /etc/fail2ban/jail.local
 [DEFAULT]
 bantime = 86400
@@ -943,7 +1055,8 @@ enabled = true
 port = $SSH_PORTS
 mode = aggressive
 EOF
-systemctl enable --now fail2ban && systemctl restart fail2ban
+systemctl enable --now fail2ban 2>/dev/null || true
+systemctl restart fail2ban 2>/dev/null || true
 
 echo "[3/5] 注入按内存分档的高并发内核栈 (BBR + MPTCP 防护)..."
 mkdir -p /etc/modules-load.d
@@ -951,7 +1064,7 @@ printf "tcp_bbr\nnf_conntrack\n" > /etc/modules-load.d/99-proxy.conf
 modprobe tcp_bbr 2>/dev/null || true
 modprobe nf_conntrack 2>/dev/null || true
 
-MEM_MB=$(free -m | awk '/Mem:/ {print $2}')
+MEM_MB=$(LC_ALL=C free -m 2>/dev/null | awk '/^Mem:/ {print $2}')
 if [ "${MEM_MB:-1000}" -le 700 ]; then
     RMEM_MAX=16777216; TCP_MAX=8388608; DEF_BUF=262144; CONN_MAX=65536
 elif [ "${MEM_MB:-1000}" -lt 1500 ]; then
@@ -1012,8 +1125,9 @@ EOF
 if [ "$MODE" = "4" ]; then
     echo "=================================================================="
     echo "  【方案 4】纯系统底层内核调优已全部完成！"
-    echo "  拥塞控制 : $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
-    echo "  MPTCP    : $(sysctl -n net.mptcp.enabled 2>/dev/null || echo 0)"
+    echo "  拥塞控制   : $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo N/A)"
+    echo "  MPTCP      : $(sysctl -n net.mptcp.enabled 2>/dev/null || echo 0)"
+    echo "  出站 TCP 25: 已通过 smtp-guard.service 默认封禁"
     echo "=================================================================="
     exit 0
 fi
@@ -1059,18 +1173,35 @@ OOMScoreAdjust=-500
 EOF
 systemctl daemon-reload
 
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64|amd64)   XRAY_ARCH="64"; XRAY_BIN="/usr/local/x-ui/bin/xray-linux-amd64" ;;
+    aarch64|arm64)  XRAY_ARCH="arm64-v8a"; XRAY_BIN="/usr/local/x-ui/bin/xray-linux-arm64" ;;
+    *) echo "[错误] 暂不支持的 CPU 架构: ${ARCH}"; exit 1 ;;
+esac
+
 if [ ! -x /usr/local/x-ui/x-ui ]; then
-    bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh) "$XUI_VERSION" <<< "n"
+    printf "n\n" | bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh) "$XUI_VERSION" || true
+fi
+if [ ! -x /usr/local/x-ui/x-ui ]; then
+    echo "[错误] 3x-ui 安装失败，未检测到 /usr/local/x-ui/x-ui！"
+    exit 1
 fi
 
-systemctl stop x-ui 2>/dev/null || true
-rm -f /usr/local/x-ui/bin/*.bak
-ARCH=$(uname -m)
-if [ "$ARCH" = "x86_64" ]; then
-    XRAY_ARCH="64"; XRAY_BIN="/usr/local/x-ui/bin/xray-linux-amd64"
-else
-    XRAY_ARCH="arm64-v8a"; XRAY_BIN="/usr/local/x-ui/bin/xray-linux-arm64"
+# 拔除 3x-ui 安装脚本可能生成的 6 天期裸 IP ACME 证书（防止公网 CT 日志暴露 IP）
+rm -rf /root/cert/ip /root/.acme.sh/[0-9]*.[0-9]*.[0-9]*.[0-9]* /var/log/x-ui/access.log 2>/dev/null || true
+if command -v crontab >/dev/null 2>&1; then
+    (crontab -l 2>/dev/null | grep -v "/root/cert/ip" || true) | crontab - 2>/dev/null || true
 fi
+
+# 确保 x-ui.db 已完成首次建表迁移后立即停止服务，保证后续 SQLite 离线安全写入
+if [ ! -s /etc/x-ui/x-ui.db ]; then
+    systemctl start x-ui 2>/dev/null || true
+    sleep 2
+fi
+systemctl stop x-ui 2>/dev/null || true
+
+rm -f /usr/local/x-ui/bin/*.bak
 mkdir -p /tmp/xray-install
 curl -fsSL -o /tmp/xray-install/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
 python3 -m zipfile -e /tmp/xray-install/xray.zip /tmp/xray-install/
@@ -1082,6 +1213,7 @@ cp -f /tmp/xray-install/geoip.dat /usr/local/x-ui/bin/geoip.dat 2>/dev/null || t
 cp -f /tmp/xray-install/geosite.dat /usr/local/x-ui/bin/geosite.dat 2>/dev/null || true
 rm -rf /tmp/xray-install
 
+mkdir -p /etc/x-ui
 if [ ! -f /etc/x-ui/panel_local.key ] || [ ! -f /etc/x-ui/panel_local.crt ]; then
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
       -keyout /etc/x-ui/panel_local.key -out /etc/x-ui/panel_local.crt \
@@ -1089,16 +1221,28 @@ if [ ! -f /etc/x-ui/panel_local.key ] || [ ! -f /etc/x-ui/panel_local.crt ]; the
 fi
 chmod 700 /etc/x-ui && chmod 600 /etc/x-ui/panel_local.key && chmod 644 /etc/x-ui/panel_local.crt
 
-systemctl start x-ui
-sleep 2
-
 # ------------------------------------------------------------------------------
-# 阶段三：按用户所选方案自动创建入站、中转出站与安全规则
+# 阶段三：按用户所选方案离线写入入站、中转出站与安全路由（x-ui 已停止，零锁竞争）
 # ------------------------------------------------------------------------------
 echo "[5/5] 写入 Xray 安全路由并按所选方案创建节点..."
 
-# 若选择方案 2（CF TLS）或方案 3（Hy2），提前准备证书（若尚无证书）
-if [ "$MODE" = "2" ] || [ "$MODE" = "3" ]; then
+if [ "$MODE" = "2" ]; then
+    NEED_CF_CERT="0"
+    if [ ! -f /etc/x-ui/cf.crt ] || [ ! -f /etc/x-ui/cf.key ]; then
+        NEED_CF_CERT="1"
+    elif ! openssl x509 -in /etc/x-ui/cf.crt -noout -subject 2>/dev/null | grep -Fq "CN = ${CF_DOMAIN}" && \
+         ! openssl x509 -in /etc/x-ui/cf.crt -noout -subject 2>/dev/null | grep -Fq "CN=${CF_DOMAIN}"; then
+        NEED_CF_CERT="1"
+    fi
+    if [ "$NEED_CF_CERT" = "1" ]; then
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
+          -keyout /etc/x-ui/cf.key -out /etc/x-ui/cf.crt \
+          -subj "/CN=${CF_DOMAIN}" -addext "subjectAltName=DNS:${CF_DOMAIN}" 2>/dev/null
+    fi
+    chmod 644 /etc/x-ui/cf.crt && chmod 600 /etc/x-ui/cf.key
+fi
+
+if [ "$MODE" = "3" ]; then
     mkdir -p /etc/hysteria
     if [ ! -f /etc/hysteria/server.crt ] || [ ! -f /etc/hysteria/server.key ]; then
         openssl ecparam -genkey -name prime256v1 -out /etc/hysteria/server.key
@@ -1109,6 +1253,7 @@ if [ "$MODE" = "2" ] || [ "$MODE" = "3" ]; then
     chmod 640 /etc/hysteria/server.key
 fi
 
+[ -s /etc/x-ui/x-ui.db ] && cp -a /etc/x-ui/x-ui.db /etc/x-ui/x-ui.db.bak
 install -m 600 /dev/null /tmp/setup_result.txt
 XRAY_BUF=$([ "${MEM_MB:-1000}" -le 700 ] && echo 32 || echo 64) \
 MODE="$MODE" REALITY_SUBMODE="$REALITY_SUBMODE" LISTEN_PORT="$LISTEN_PORT" \
@@ -1116,12 +1261,12 @@ REALITY_SNI="$REALITY_SNI" CF_DOMAIN="$CF_DOMAIN" SERVER_IP="$SERVER_IP" \
 ENABLE_RELAY="$ENABLE_RELAY" RES_IP="$RES_IP" RES_PORT="$RES_PORT" RES_SS_PASS="$RES_SS_PASS" \
 XRAY_BIN="$XRAY_BIN" \
 python3 - << 'PYEOF' > /tmp/setup_result.txt
-import sqlite3, json, os, uuid, secrets, subprocess, base64
+import sqlite3, json, os, uuid, secrets, subprocess, base64, time, urllib.parse
 os.umask(0o077)
 
 mode = os.environ['MODE']
 submode = os.environ['REALITY_SUBMODE']
-port = int(os.environ['LISTEN_PORT'])
+port = int(os.environ['LISTEN_PORT'] or '443')
 sni = os.environ['REALITY_SNI']
 cf_domain = os.environ['CF_DOMAIN']
 server_ip = os.environ['SERVER_IP']
@@ -1131,8 +1276,18 @@ res_port = os.environ['RES_PORT'].strip()
 res_ss_pass = os.environ['RES_SS_PASS'].strip()
 xray_bin = os.environ['XRAY_BIN']
 
+if port == 62789:
+    raise SystemExit("端口 62789 为 Xray 内部 API 端口，请更换业务监听端口！")
+
 conn = sqlite3.connect('/etc/x-ui/x-ui.db')
 c = conn.cursor()
+
+# 若业务 TCP 入站端口与面板 webPort 撞车，自动将面板迁至 54321 防止 bind 冲突
+if mode in ('1', '2'):
+    wp_row = c.execute("SELECT value FROM settings WHERE key='webPort'").fetchone()
+    if wp_row and wp_row[0] and wp_row[0].strip() == str(port):
+        new_wp = '54321' if port != 54321 else '54322'
+        c.execute("UPDATE settings SET value=? WHERE key='webPort'", (new_wp,))
 
 # 1. 基础模板与安全路由
 row = c.execute("SELECT value FROM settings WHERE key='xrayTemplateConfig'").fetchone()
@@ -1160,17 +1315,207 @@ else:
 if not any(ob.get('tag') == 'blocked' for ob in outbounds):
     outbounds.append({"protocol": "blackhole", "settings": {}, "tag": "blocked"})
 
-# 若开启一键家宽中转，写入按入站隔离的专属出站 (out-res-<tag>)，避免多入站不同家宽互相覆盖
-relay_tag = None
-if mode == '1' and submode != '3':
-    expected_inb_tag = f"inbound-{port}"
-elif mode == '3':
-    expected_inb_tag = "socks-in-10855"
-else:
-    expected_inb_tag = None
+tables = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+has_clients_tbl = 'clients' in tables and 'client_inbounds' in tables
 
-if expected_inb_tag:
-    cand_relay_tag = f"out-res-{expected_inb_tag}"
+def sync_v3_client(inb_id, email, client_uuid, client_flow, sub_id):
+    if not (has_clients_tbl and email and client_uuid):
+        return
+    now_ms = int(time.time() * 1000)
+    col_info = c.execute("PRAGMA table_info(clients)").fetchall()
+    col_names = [r[1] for r in col_info]
+    if 'uuid' not in col_names:
+        return
+    defaults = {
+        'email': email, 'uuid': client_uuid, 'password': '', 'flow': client_flow or '',
+        'method': '', 'comment': '', 'sub_id': sub_id, 'tg_id': 0, 'total_gb': 0,
+        'limit_ip': 0, 'expiry_time': 0, 'enable': 1, 'reset': 0, 'security': 'auto',
+        'created_at': now_ms, 'updated_at': now_ms
+    }
+    ins_cols, ins_vals = [], []
+    for _, name, ctype, notnull, dflt, pk in col_info:
+        if pk:
+            continue
+        if name in defaults:
+            val = defaults[name]
+            if name == 'tg_id' and 'TEXT' in (ctype or '').upper():
+                val = ''
+            ins_cols.append(name)
+            ins_vals.append(val)
+        elif notnull and dflt is None:
+            ins_cols.append(name)
+            ins_vals.append(0 if 'INT' in (ctype or '').upper() else '')
+    q = f"INSERT OR IGNORE INTO clients ({','.join(ins_cols)}) VALUES ({','.join(['?']*len(ins_cols))})"
+    c.execute(q, ins_vals)
+    row_cid = c.execute("SELECT id FROM clients WHERE email=?", (email,)).fetchone()
+    if row_cid:
+        cid = row_cid[0]
+        ci_cols = [r[1] for r in c.execute("PRAGMA table_info(client_inbounds)").fetchall()]
+        if 'flow_override' in ci_cols:
+            c.execute("INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id, flow_override) VALUES (?, ?, ?)", (cid, inb_id, client_flow or ''))
+        else:
+            c.execute("INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id) VALUES (?, ?)", (cid, inb_id))
+
+def upsert_or_reuse_inbound(remark, listen, in_port, proto, settings_obj, stream_obj, tag, client_email=None, client_uuid=None, client_flow="", sub_id=""):
+    ex = c.execute("SELECT id, remark, protocol, settings, stream_settings, tag FROM inbounds WHERE port=?", (in_port,)).fetchone()
+    if ex:
+        return ex, True
+    sniff = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "metadataOnly": False, "routeOnly": True}
+    c.execute("""
+        INSERT INTO inbounds (user_id, up, down, total, remark, enable, expiry_time, listen, port, protocol, settings, stream_settings, tag, sniffing)
+        VALUES (1, 0, 0, 0, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?)
+    """, (remark, listen, in_port, proto, json.dumps(settings_obj, indent=2), json.dumps(stream_obj, indent=2), tag, json.dumps(sniff)))
+    inb_id = c.lastrowid
+    if client_email:
+        c.execute("INSERT INTO client_traffics (inbound_id, enable, email, up, down, expiry_time, total, reset) VALUES (?, 1, ?, 0, 0, 0, 0, 0)", (inb_id, client_email))
+        sync_v3_client(inb_id, client_email, client_uuid, client_flow, sub_id or secrets.token_hex(8))
+    return (inb_id, remark, proto, json.dumps(settings_obj), json.dumps(stream_obj), tag), False
+
+def build_link_from_row(rem, in_port, proto, s_str, st_str):
+    s = json.loads(s_str or '{}')
+    st = json.loads(st_str or '{}')
+    if proto == 'shadowsocks':
+        return 'RESIDENTIAL_SS', s.get('password', '')
+    if proto == 'vless':
+        cl = (s.get('clients') or [{}])[0]
+        u = cl.get('id', '')
+        fl = cl.get('flow', '')
+        net = st.get('network', 'tcp')
+        sec = st.get('security', 'none')
+        r_enc = urllib.parse.quote(rem or f'VLESS-{in_port}')
+        if sec == 'reality':
+            rs = st.get('realitySettings', {})
+            pbk = rs.get('settings', {}).get('publicKey', '')
+            sni_v = (rs.get('serverNames') or ['addons.mozilla.org'])[0]
+            sid_v = (rs.get('shortIds') or [''])[0]
+            if net == 'xhttp':
+                xh = st.get('xhttpSettings', {})
+                p_enc = urllib.parse.quote(xh.get('path', '/vless-xhttp'), safe='')
+                xm = xh.get('mode', 'auto')
+                return 'LINK', f"vless://{u}@{server_ip}:{in_port}?type=xhttp&path={p_enc}&mode={xm}&security=reality&pbk={pbk}&fp=chrome&sni={sni_v}&sid={sid_v}&spx=%2F#{r_enc}"
+            fl_q = f"&flow={fl}" if fl else ""
+            return 'LINK', f"vless://{u}@{server_ip}:{in_port}?type=tcp&security=reality&pbk={pbk}&fp=chrome&sni={sni_v}&sid={sid_v}&spx=%2F{fl_q}#{r_enc}"
+        if sec == 'tls':
+            host_v = st.get('tlsSettings', {}).get('serverName', cf_domain)
+            xh = st.get('xhttpSettings', {})
+            p_enc = urllib.parse.quote(xh.get('path', '/vless-xhttp'), safe='')
+            xm = xh.get('mode', 'packet-up')
+            return 'LINK', f"vless://{u}@{host_v}:{in_port}?type=xhttp&path={p_enc}&mode={xm}&host={host_v}&security=tls&sni={host_v}&fp=chrome#{r_enc}"
+    return '', ''
+
+inbound_tag_for_relay = None
+
+if mode == '1' and submode == '3':
+    ss_pass = base64.b64encode(os.urandom(32)).decode()
+    tag = f"in-ss-{port}"
+    settings_obj = {"method": "2022-blake3-aes-256-gcm", "password": ss_pass, "network": "tcp,udp", "clients": []}
+    stream_obj = {"network": "tcp", "security": "none", "sockopt": {"tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20}}
+    row_inb, reused = upsert_or_reuse_inbound("Residential-SS2022", "", port, "shadowsocks", settings_obj, stream_obj, tag)
+    _, _, _, s_raw, _, _ = row_inb
+    real_pass = json.loads(s_raw or '{}').get('password', ss_pass)
+    if reused:
+        print("REUSED_EXISTING=1")
+    print("RESULT_TYPE=RESIDENTIAL_SS")
+    print(f"SS_IP={server_ip}")
+    print(f"SS_PORT={port}")
+    print(f"SS_PASS={real_pass}")
+
+elif mode == '1':
+    out = subprocess.check_output([xray_bin, 'x25519'], text=True)
+    priv = pub = ''
+    for line in out.splitlines():
+        if 'Private' in line: priv = line.split(':', 1)[1].strip()
+        elif 'Public' in line or 'Password' in line: pub = line.split(':', 1)[1].strip()
+    sid = secrets.token_hex(4)
+    u = str(uuid.uuid4())
+    sub_id = secrets.token_hex(8)
+    email = f"reality-{port}"
+    tag = f"inbound-{port}"
+    flow = "" if submode == '1' else "xtls-rprx-vision"
+    net = "xhttp" if submode == '1' else "tcp"
+    settings_obj = {
+        "clients": [{"id": u, "flow": flow, "email": email, "limitIp": 0, "totalGB": 0, "expiryTime": 0, "enable": True, "subId": sub_id, "reset": 0}],
+        "decryption": "none", "fallbacks": []
+    }
+    # 显式指定 minClientVer: "1.0.0"，防止 Xray v26.7.11+ 空值默认 >=26.3.27 拒连 Clash/sing-box/旧版小火箭
+    stream_obj = {
+        "network": net, "security": "reality", "externalProxy": [],
+        "realitySettings": {
+            "show": False, "xver": 0, "target": f"{sni}:443", "serverNames": [sni],
+            "privateKey": priv, "minClientVer": "1.0.0", "maxClientVer": "", "maxTimeDiff": 0,
+            "shortIds": [sid],
+            "settings": {"publicKey": pub, "fingerprint": "chrome", "serverName": "", "spiderX": "/"}
+        },
+        "sockopt": {"tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20}
+    }
+    if submode == '1':
+        stream_obj["xhttpSettings"] = {"path": "/vless-xhttp", "host": "", "mode": "auto"}
+        remark = "VLESS-XHTTP-REALITY"
+    else:
+        remark = "VLESS-Vision-REALITY"
+    row_inb, reused = upsert_or_reuse_inbound(remark, "", port, "vless", settings_obj, stream_obj, tag, email, u, flow, sub_id)
+    _, rem_actual, proto_actual, s_raw, st_raw, tag_actual = row_inb
+    inbound_tag_for_relay = tag_actual or tag
+    _, real_link = build_link_from_row(rem_actual, port, proto_actual, s_raw, st_raw)
+    if reused:
+        print("REUSED_EXISTING=1")
+    print("RESULT_TYPE=LINK")
+    print(f"SHARE_LINK={real_link}")
+
+elif mode == '2':
+    u = str(uuid.uuid4())
+    sub_id = secrets.token_hex(8)
+    email = f"cf-xhttp-{port}"
+    tag = f"inbound-{port}"
+    settings_obj = {
+        "clients": [{"id": u, "flow": "", "email": email, "limitIp": 0, "totalGB": 0, "expiryTime": 0, "enable": True, "subId": sub_id, "reset": 0}],
+        "decryption": "none", "fallbacks": []
+    }
+    stream_obj = {
+        "network": "xhttp", "security": "tls", "externalProxy": [],
+        "tlsSettings": {
+            "serverName": cf_domain, "minVersion": "1.2", "maxVersion": "1.3",
+            "certificates": [{"certificateFile": "/etc/x-ui/cf.crt", "keyFile": "/etc/x-ui/cf.key", "ocspStapling": 3600}],
+            "alpn": ["h2", "http/1.1"]
+        },
+        "xhttpSettings": {"path": "/vless-xhttp", "mode": "packet-up"},
+        "sockopt": {"tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20, "trustedXForwardedFor": ["CF-Connecting-IP", "X-Forwarded-For"]}
+    }
+    row_inb, reused = upsert_or_reuse_inbound("CF-VLESS-XHTTP-TLS", "", port, "vless", settings_obj, stream_obj, tag, email, u, "", sub_id)
+    _, rem_actual, proto_actual, s_raw, st_raw, _ = row_inb
+    _, real_link = build_link_from_row(rem_actual, port, proto_actual, s_raw, st_raw)
+    if reused:
+        print("REUSED_EXISTING=1")
+    print("RESULT_TYPE=LINK")
+    print(f"SHARE_LINK={real_link}")
+
+elif mode == '3':
+    inbound_tag_for_relay = "socks-in-10855"
+    if enable_relay and res_ip and res_port and res_ss_pass:
+        settings_obj = {"auth": "noauth", "udp": True, "ip": "127.0.0.1"}
+        stream_obj = {"network": "tcp", "security": "none"}
+        upsert_or_reuse_inbound("Hy2-SOCKS5-Bridge", "127.0.0.1", 10855, "socks", settings_obj, stream_obj, inbound_tag_for_relay)
+    else:
+        c.execute("DELETE FROM inbounds WHERE tag='socks-in-10855'")
+
+# 为存量 REALITY 节点自动补齐 minClientVer="1.0.0" 与 sniffing/keepalive
+for inb_id, sniff_raw, stream_raw in c.execute("SELECT id, sniffing, stream_settings FROM inbounds").fetchall():
+    sn = json.loads(sniff_raw or '{}')
+    sn.update({'enabled': True, 'destOverride': ['http', 'tls', 'quic', 'fakedns'], 'metadataOnly': False, 'routeOnly': True})
+    st = json.loads(stream_raw or '{}')
+    so = st.setdefault('sockopt', {})
+    so.setdefault('tcpKeepAliveIdle', 120)
+    so.setdefault('tcpKeepAliveInterval', 20)
+    if st.get('security') == 'reality':
+        rs = st.setdefault('realitySettings', {})
+        if not rs.get('minClientVer'):
+            rs['minClientVer'] = '1.0.0'
+    c.execute("UPDATE inbounds SET sniffing=?, stream_settings=? WHERE id=?", (json.dumps(sn), json.dumps(st, indent=2), inb_id))
+
+# 处理按入站隔离的专属家宽中转出站 (out-res-<tag>)，并清理已关闭中转的孤儿出站/规则
+relay_tag = None
+if inbound_tag_for_relay:
+    cand_relay_tag = f"out-res-{inbound_tag_for_relay}"
     outbounds = [ob for ob in outbounds if ob.get('tag') != cand_relay_tag]
     if enable_relay and res_ip and res_port and res_ss_pass:
         outbounds.append({
@@ -1186,123 +1531,9 @@ if expected_inb_tag:
             }
         })
         relay_tag = cand_relay_tag
-    cfg['outbounds'] = outbounds
+cfg['outbounds'] = outbounds
+valid_out_tags = {ob.get('tag') for ob in outbounds if ob.get('tag')}
 
-tables = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-has_clients_tbl = 'clients' in tables and 'client_inbounds' in tables
-
-def insert_inbound(remark, listen, in_port, proto, settings_obj, stream_obj, tag, client_email=None, client_uuid=None, client_flow=""):
-    if c.execute("SELECT id FROM inbounds WHERE port=? AND listen=?", (in_port, listen)).fetchone():
-        return None
-    sniff = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "metadataOnly": False, "routeOnly": True}
-    c.execute("""
-        INSERT INTO inbounds (user_id, up, down, total, remark, enable, expiry_time, listen, port, protocol, settings, stream_settings, tag, sniffing)
-        VALUES (1, 0, 0, 0, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?)
-    """, (remark, listen, in_port, proto, json.dumps(settings_obj, indent=2), json.dumps(stream_obj, indent=2), tag, json.dumps(sniff)))
-    inb_id = c.lastrowid
-    if client_email:
-        c.execute("INSERT INTO client_traffics (inbound_id, enable, email, up, down, expiry_time, total, reset) VALUES (?, 1, ?, 0, 0, 0, 0, 0)", (inb_id, client_email))
-        if has_clients_tbl and client_uuid:
-            cols = [r[1] for r in c.execute("PRAGMA table_info(clients)").fetchall()]
-            if 'uuid' in cols:
-                if 'flow' in cols:
-                    c.execute("INSERT OR IGNORE INTO clients (email, uuid, flow, enable) VALUES (?, ?, ?, 1)", (client_email, client_uuid, client_flow))
-                else:
-                    c.execute("INSERT OR IGNORE INTO clients (email, uuid, enable) VALUES (?, ?, 1)", (client_email, client_uuid))
-                cid = c.execute("SELECT id FROM clients WHERE email=?", (client_email,)).fetchone()[0]
-                ci_cols = [r[1] for r in c.execute("PRAGMA table_info(client_inbounds)").fetchall()]
-                if 'flow_override' in ci_cols:
-                    c.execute("INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id, flow_override) VALUES (?, ?, ?)", (cid, inb_id, client_flow))
-                else:
-                    c.execute("INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id) VALUES (?, ?)", (cid, inb_id))
-    return inb_id
-
-inbound_tag_for_relay = None
-
-if mode == '1' and submode == '3':
-    # 住宅家宽落地机：自动生成 SS-2022
-    ss_pass = base64.b64encode(os.urandom(32)).decode()
-    tag = f"in-ss-{port}"
-    settings_obj = {"method": "2022-blake3-aes-256-gcm", "password": ss_pass, "network": "tcp,udp", "clients": []}
-    stream_obj = {"network": "tcp", "security": "none", "sockopt": {"tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20}}
-    insert_inbound("Residential-SS2022", "", port, "shadowsocks", settings_obj, stream_obj, tag)
-    print(f"RESULT_TYPE=RESIDENTIAL_SS")
-    print(f"SS_IP={server_ip}")
-    print(f"SS_PORT={port}")
-    print(f"SS_PASS={ss_pass}")
-
-elif mode == '1':
-    # 方案 1：VLESS + REALITY (XHTTP 或 raw+Vision)
-    out = subprocess.check_output([xray_bin, 'x25519'], text=True)
-    priv = pub = ''
-    for line in out.splitlines():
-        if 'Private' in line: priv = line.split(':', 1)[1].strip()
-        elif 'Public' in line or 'Password' in line: pub = line.split(':', 1)[1].strip()
-    sid = secrets.token_hex(4)
-    u = str(uuid.uuid4())
-    email = f"reality-{port}"
-    tag = f"inbound-{port}"
-    flow = "" if submode == '1' else "xtls-rprx-vision"
-    net = "xhttp" if submode == '1' else "tcp"
-    settings_obj = {
-        "clients": [{"id": u, "flow": flow, "email": email, "limitIp": 0, "totalGB": 0, "expiryTime": 0, "enable": True, "subId": secrets.token_hex(8), "reset": 0}],
-        "decryption": "none", "fallbacks": []
-    }
-    stream_obj = {
-        "network": net, "security": "reality", "externalProxy": [],
-        "realitySettings": {
-            "show": False, "xver": 0, "target": f"{sni}:443", "serverNames": [sni],
-            "privateKey": priv, "minClientVer": "", "maxClientVer": "", "maxTimeDiff": 0,
-            "shortIds": [sid],
-            "settings": {"publicKey": pub, "fingerprint": "chrome", "serverName": "", "spiderX": "/"}
-        },
-        "sockopt": {"tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20}
-    }
-    if submode == '1':
-        stream_obj["xhttpSettings"] = {"path": "/vless-xhttp", "host": "", "mode": "auto"}
-        remark = "VLESS-XHTTP-REALITY"
-        link = f"vless://{u}@{server_ip}:{port}?type=xhttp&path=%2Fvless-xhttp&mode=auto&security=reality&pbk={pub}&fp=chrome&sni={sni}&sid={sid}&spx=%2F#{remark}"
-    else:
-        remark = "VLESS-Vision-REALITY"
-        link = f"vless://{u}@{server_ip}:{port}?type=tcp&security=reality&pbk={pub}&fp=chrome&sni={sni}&sid={sid}&spx=%2F&flow=xtls-rprx-vision#{remark}"
-    insert_inbound(remark, "", port, "vless", settings_obj, stream_obj, tag, email, u, flow)
-    inbound_tag_for_relay = tag
-    print(f"RESULT_TYPE=LINK")
-    print(f"SHARE_LINK={link}")
-
-elif mode == '2':
-    # 方案 2：Cloudflare CDN (VLESS + XHTTP + TLS)
-    u = str(uuid.uuid4())
-    email = f"cf-xhttp-{port}"
-    tag = f"inbound-{port}"
-    settings_obj = {
-        "clients": [{"id": u, "flow": "", "email": email, "limitIp": 0, "totalGB": 0, "expiryTime": 0, "enable": True, "subId": secrets.token_hex(8), "reset": 0}],
-        "decryption": "none", "fallbacks": []
-    }
-    stream_obj = {
-        "network": "xhttp", "security": "tls", "externalProxy": [],
-        "tlsSettings": {
-            "serverName": cf_domain, "minVersion": "1.2", "maxVersion": "1.3",
-            "certificates": [{"certificateFile": "/etc/hysteria/server.crt", "keyFile": "/etc/hysteria/server.key", "ocspStapling": 3600}],
-            "alpn": ["h2", "http/1.1"]
-        },
-        "xhttpSettings": {"path": "/vless-xhttp", "host": cf_domain, "mode": "auto"},
-        "sockopt": {"tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20, "trustedXForwardedFor": ["CF-Connecting-IP", "X-Forwarded-For"]}
-    }
-    insert_inbound("CF-VLESS-XHTTP-TLS", "", port, "vless", settings_obj, stream_obj, tag, email, u)
-    link = f"vless://{u}@{cf_domain}:{port}?type=xhttp&path=%2Fvless-xhttp&mode=auto&host={cf_domain}&security=tls&sni={cf_domain}#CF-VLESS-XHTTP-TLS"
-    print(f"RESULT_TYPE=LINK")
-    print(f"SHARE_LINK={link}")
-
-elif mode == '3' and relay_tag:
-    # 方案 3 Hy2 启用家宽中转：在 Xray 侧开启本地 127.0.0.1:10855 SOCKS5 桥接
-    tag = "socks-in-10855"
-    settings_obj = {"auth": "noauth", "udp": True, "ip": "127.0.0.1"}
-    stream_obj = {"network": "tcp", "security": "none"}
-    insert_inbound("Hy2-SOCKS5-Bridge", "127.0.0.1", 10855, "socks", settings_obj, stream_obj, tag)
-    inbound_tag_for_relay = tag
-
-# 写入置顶防私网/BT/回国路由 + 中转规则
 old_rules = cfg.setdefault('routing', {}).setdefault('rules', [])
 custom_rules = [
     r for r in old_rules
@@ -1312,6 +1543,7 @@ custom_rules = [
     and not (r.get('outboundTag') == 'blocked' and str(r.get('port', '')) == '25' and not r.get('ip') and not r.get('domain'))
     and not (r.get('outboundTag') == 'direct' and r.get('domain') == ['geosite:google'] and not r.get('ip') and not r.get('inboundTag') and not r.get('user'))
     and not (inbound_tag_for_relay and r.get('inboundTag') == [inbound_tag_for_relay] and str(r.get('outboundTag', '')).startswith('out-res'))
+    and not (str(r.get('outboundTag', '')).startswith('out-res') and r.get('outboundTag') not in valid_out_tags)
 ]
 if relay_tag and inbound_tag_for_relay:
     custom_rules.append({'type': 'field', 'inboundTag': [inbound_tag_for_relay], 'outboundTag': relay_tag})
@@ -1347,51 +1579,72 @@ conn.close()
 PYEOF
 chmod 600 /etc/x-ui/x-ui.db 2>/dev/null || true
 
-# 若为家宽落地机且填写了前置白名单 IP，自动部署 nftables 保护端口
+# 若为家宽落地机且填写了前置白名单 IP，经 Python ipaddress 强校验后自动部署 nftables 保护端口
 if [ "$MODE" = "1" ] && [ "$REALITY_SUBMODE" = "3" ] && [ -n "$RES_WHITELIST_IP" ]; then
     mkdir -p /etc/nftables.d
-    cat << EOF > /etc/nftables.d/res-guard.nft
-table inet res_guard
-delete table inet res_guard
-table inet res_guard {
-    set trusted_relays_v4 {
-        type ipv4_addr
-        flags interval
-        elements = { 127.0.0.0/8, ${RES_WHITELIST_IP} }
-    }
-    chain input {
-        type filter hook input priority filter; policy accept;
-        iifname "lo" accept
-        ct state established,related accept
-        tcp dport ${LISTEN_PORT} ip saddr @trusted_relays_v4 accept
-        udp dport ${LISTEN_PORT} ip saddr @trusted_relays_v4 accept
-        tcp dport ${LISTEN_PORT} drop
-        udp dport ${LISTEN_PORT} drop
-    }
-    chain output {
-        type filter hook output priority filter; policy accept;
-        tcp dport 25 reject with tcp reset
-    }
-}
-EOF
-    if nft -f /etc/nftables.d/res-guard.nft; then
-        cat << 'EOF' > /etc/systemd/system/res-guard.service
+    if LISTEN_PORT="$LISTEN_PORT" RES_WHITELIST_IP="$RES_WHITELIST_IP" python3 - << 'NFTPY'
+import os, re, ipaddress
+port = int(os.environ["LISTEN_PORT"])
+raw = os.environ.get("RES_WHITELIST_IP", "")
+tokens = [t.strip() for t in re.split(r"[,，\s]+", raw) if t.strip()]
+v4, v6 = ["127.0.0.0/8"], ["::1/128"]
+for t in tokens:
+    net = ipaddress.ip_network(t, strict=False)
+    if net.version == 4:
+        v4.append(str(net))
+    else:
+        v6.append(str(net))
+if len(v4) == 1 and len(v6) == 1:
+    raise SystemExit(1)
+lines = [
+    "table inet res_guard",
+    "delete table inet res_guard",
+    "table inet res_guard {",
+    f"    set trusted_relays_v4 {{ type ipv4_addr; flags interval; elements = {{ {', '.join(v4)} }}; }}",
+    f"    set trusted_relays_v6 {{ type ipv6_addr; flags interval; elements = {{ {', '.join(v6)} }}; }}",
+    "    chain input {",
+    "        type filter hook input priority filter; policy accept;",
+    '        iifname "lo" accept',
+    "        ct state established,related accept",
+    f"        tcp dport {port} ip saddr @trusted_relays_v4 accept",
+    f"        udp dport {port} ip saddr @trusted_relays_v4 accept",
+    f"        tcp dport {port} ip6 saddr @trusted_relays_v6 accept",
+    f"        udp dport {port} ip6 saddr @trusted_relays_v6 accept",
+    f"        tcp dport {port} drop",
+    f"        udp dport {port} drop",
+    "    }",
+    "    chain output {",
+    "        type filter hook output priority filter; policy accept;",
+    "        tcp dport 25 reject with tcp reset",
+    "    }",
+    "}",
+]
+open("/etc/nftables.d/res-guard.nft", "w", encoding="utf-8").write("\n".join(lines) + "\n")
+NFTPY
+    then
+        if nft -f /etc/nftables.d/res-guard.nft; then
+            cat << 'EOF' > /etc/systemd/system/res-guard.service
 [Unit]
 Description=Residential Landing Port Whitelist
 After=network-online.target
 Wants=network-online.target
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f /etc/nftables.d/res-guard.nft
 ExecStop=/usr/sbin/nft delete table inet res_guard
+
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload && systemctl enable res-guard.service >/dev/null 2>&1 || true
-        echo "  [OK] 家宽端口 ${LISTEN_PORT} 白名单已生效并配置开机自启 (res-guard.service)"
+            systemctl daemon-reload && systemctl enable res-guard.service >/dev/null 2>&1 || true
+            echo "  [OK] 家宽端口 ${LISTEN_PORT} 白名单已生效并配置开机自启 (res-guard.service)"
+        else
+            echo "  [警告] nftables 家宽白名单加载失败！请检查内核 nftables 支持！" >&2
+        fi
     else
-        echo "  [警告] nftables 家宽白名单加载失败！请检查白名单 IP (${RES_WHITELIST_IP}) 格式或内核 nftables 支持！" >&2
+        echo "  [警告] 白名单 IP (${RES_WHITELIST_IP}) 含非法地址，已跳过防火墙白名单以免断联！" >&2
     fi
 fi
 
@@ -1467,6 +1720,8 @@ auth:
 acl:
 ${ACL_GEOIP_LINE}
   inline:
+    - reject(all, tcp/25)
+    - reject(all, udp/25)
     - reject(127.0.0.0/8)
     - reject(10.0.0.0/8)
     - reject(172.16.0.0/12)
@@ -1488,31 +1743,39 @@ EOF
     chmod 644 /etc/hysteria/server.crt
     chmod 640 /etc/hysteria/server.key /etc/hysteria/config.yaml
 
+    # 覆盖端口跳跃服务前先停止旧实例，确保修改监听端口时旧 PREROUTING 转发规则被干净卸载
+    systemctl stop hy2-port-hopping.service 2>/dev/null || true
     cat << EOF > /etc/systemd/system/hy2-port-hopping.service
 [Unit]
 Description=Hysteria 2 Port Hopping (IPv4/IPv6 Idempotent)
 After=network.target
+
 [Service]
 Type=oneshot
 ExecStart=/bin/sh -c 'iptables -t nat -C PREROUTING -p udp -m addrtype --dst-type LOCAL --dport 20000:50000 -j REDIRECT --to-ports ${LISTEN_PORT} 2>/dev/null || iptables -t nat -A PREROUTING -p udp -m addrtype --dst-type LOCAL --dport 20000:50000 -j REDIRECT --to-ports ${LISTEN_PORT}; ip6tables -t nat -C PREROUTING -p udp -m addrtype --dst-type LOCAL --dport 20000:50000 -j REDIRECT --to-ports ${LISTEN_PORT} 2>/dev/null || ip6tables -t nat -A PREROUTING -p udp -m addrtype --dst-type LOCAL --dport 20000:50000 -j REDIRECT --to-ports ${LISTEN_PORT} 2>/dev/null || true; sysctl -w net.netfilter.nf_conntrack_max=${CONN_MAX} net.netfilter.nf_conntrack_udp_timeout=30 net.netfilter.nf_conntrack_udp_timeout_stream=60 >/dev/null 2>&1 || true'
 ExecStop=/bin/sh -c 'iptables -t nat -D PREROUTING -p udp -m addrtype --dst-type LOCAL --dport 20000:50000 -j REDIRECT --to-ports ${LISTEN_PORT} 2>/dev/null || true; ip6tables -t nat -D PREROUTING -p udp -m addrtype --dst-type LOCAL --dport 20000:50000 -j REDIRECT --to-ports ${LISTEN_PORT} 2>/dev/null || true'
 RemainAfterExit=yes
+
 [Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload && systemctl enable --now hy2-port-hopping.service
-    systemctl enable --now hysteria-server
+    systemctl enable --now hysteria-server && systemctl restart hysteria-server
     HY2_LINK="hysteria2://${HY2_PASS}@${SERVER_IP}:${LISTEN_PORT}?insecure=1&sni=www.bing.com&pinSHA256=${HY2_PIN}&mport=20000-50000#Hy2-PortHopping"
 fi
 
 # 每周日 04:00 平滑重启 x-ui 释放内存缓存
-( (crontab -l 2>/dev/null | grep -v "systemctl restart x-ui") || true; echo "0 4 * * 0 systemctl restart x-ui" ) | crontab -
+if command -v crontab >/dev/null 2>&1; then
+    ( (crontab -l 2>/dev/null | grep -v "systemctl restart x-ui") || true; echo "0 4 * * 0 systemctl restart x-ui" ) | crontab - 2>/dev/null || true
+fi
+systemctl enable --now x-ui
 systemctl restart x-ui
 
 PANEL_PORT=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webPort' LIMIT 1\").fetchone(); print(r[0].strip() if r and r[0] else '54321')" 2>/dev/null | tr -dc '0-9' || true)
+PANEL_PORT="${PANEL_PORT:-54321}"
 PANEL_PATH=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webBasePath' LIMIT 1\").fetchone(); print(r[0].strip().strip('/') if r and r[0] else '')" 2>/dev/null || true)
 PANEL_SCHEME=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webCertFile' LIMIT 1\").fetchone(); print('https' if r and r[0] and r[0].strip() else 'http')" 2>/dev/null || echo "http")
-SSH_PORT_NOW=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}' || true)
+SSH_PORT_NOW=$( (sshd -T 2>/dev/null || true) | awk '$1=="port"{print $2; exit}' )
 SSH_PORT_NOW="${SSH_PORT_NOW:-22}"
 SSH_P_FLAG=""
 [ "$SSH_PORT_NOW" != "22" ] && SSH_P_FLAG="-p ${SSH_PORT_NOW} "
@@ -1532,6 +1795,10 @@ echo ""
 echo "  第 2 步：输入 VPS 密码登录并保持窗口别关，然后用电脑浏览器打开："
 echo "  ${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 if [ -f /tmp/setup_result.txt ]; then
+    if grep -q "^REUSED_EXISTING=1" /tmp/setup_result.txt; then
+        echo "------------------------------------------------------------------"
+        echo "  [提示] 检测到端口 ${LISTEN_PORT} 已存在入站节点，已复用原节点凭据并同步更新路由规则。"
+    fi
     if grep -q "RESULT_TYPE=RESIDENTIAL_SS" /tmp/setup_result.txt; then
         echo "------------------------------------------------------------------"
         echo "  【家宽落地 SS-2022 中转凭据】（请复制到前置优化机脚本中）："

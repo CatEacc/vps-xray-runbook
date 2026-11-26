@@ -116,24 +116,55 @@ export DEBIAN_FRONTEND=noninteractive
 apt update -y && apt upgrade -y && apt install -y curl wget unzip chrony iptables nftables iptables-persistent sqlite3 fail2ban python3 python3-systemd
 
 # 2. 原子钟同步（解决 REALITY maxTimeDiff / Hy2 握手时间差导致的拒连）
-systemctl enable --now chrony
-chronyc makestep || true
+systemctl enable --now chrony 2>/dev/null || true
+chronyc makestep 2>/dev/null || true
 timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
 systemctl restart cron 2>/dev/null || true
 
-# 3. 创建 1GB Swap（512M / 1G 小内存防 OOM 气囊，若云镜像自带不足 900M 的 /swap.img 则平滑替换）
+# 3. 创建 1GB Swap（512M / 1G 小内存防 OOM 气囊；仅当 swapon 成功才写入 fstab 并带 nofail 防启动卡死）
 if [ ! -f /swapfile ]; then
-    fallocate -l 1G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=1024
-    chmod 600 /swapfile
-    mkswap /swapfile
-    swapon /swapfile || true
+    fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none
+    chmod 600 /swapfile && mkswap /swapfile
+    swapon /swapfile 2>/dev/null || { rm -f /swapfile; dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile 2>/dev/null || rm -f /swapfile; }
 fi
-grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
-if [ -f /swap.img ] && [ "$(stat -c%s /swap.img 2>/dev/null || echo 1073741824)" -lt 943718400 ]; then
-    swapoff /swap.img 2>/dev/null || true
-    sed -i '\|/swap\.img|d' /etc/fstab
-    rm -f /swap.img
+if swapon --show=NAME --noheadings 2>/dev/null | grep -qx "/swapfile"; then
+    grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw,nofail 0 0" >> /etc/fstab
+    if [ -f /swap.img ] && [ "$(stat -c%s /swap.img 2>/dev/null || echo 1073741824)" -lt 943718400 ]; then
+        swapoff /swap.img 2>/dev/null || true
+        sed -i '\|/swap\.img|d' /etc/fstab
+        rm -f /swap.img
+    fi
 fi
+
+# 3.5 主机层默认永久封禁出站 TCP 25（独立 smtp_guard 表，防恶意发信拖黑 IP，不影响 465/587/993）
+mkdir -p /etc/nftables.d
+cat << 'EOF' > /etc/nftables.d/smtp-guard.nft
+table inet smtp_guard
+delete table inet smtp_guard
+table inet smtp_guard {
+    chain output {
+        type filter hook output priority filter; policy accept;
+        tcp dport 25 reject with tcp reset
+    }
+}
+EOF
+nft -f /etc/nftables.d/smtp-guard.nft 2>/dev/null || true
+cat << 'EOF' > /etc/systemd/system/smtp-guard.service
+[Unit]
+Description=Block Outbound TCP 25 (SMTP Anti-Spam)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/smtp-guard.nft
+ExecStop=/usr/sbin/nft delete table inet smtp_guard
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable smtp-guard.service 2>/dev/null || true
 
 # 4. 日志上限与内存映射收敛（防写爆小硬盘 + 杜绝 journald 映射百兆日志占用物理内存）
 cat << 'EOF' > /etc/systemd/journald.conf
@@ -182,21 +213,18 @@ elif systemctl is-active --quiet systemd-resolved 2>/dev/null; then
     systemctl restart systemd-resolved 2>/dev/null || true
 fi
 
-# 6. SSH 公钥免密放行 + 已配公钥时自动关闭密码防爆破
+# 6. 开启 SSH 公钥登录（切勿盲目凭 [ -s authorized_keys ] 关密码：AWS/Oracle/GCP cloud-init 自带 exit 142 占位公钥会锁死 root！）
+# 如需关闭密码登录，请先确认存在无 command= 前缀的真实公钥且新开终端实测密钥可登进 root 后再手动改 PasswordAuthentication no
+mkdir -p /run/sshd
 sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
 grep -q "^PubkeyAuthentication yes" /etc/ssh/sshd_config || echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
-if [ -s /root/.ssh/authorized_keys ] || [ -s ~/.ssh/authorized_keys ] || { [ -n "${SUDO_USER:-}" ] && [ -s "/home/${SUDO_USER}/.ssh/authorized_keys" ]; }; then
-    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
-    grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config || echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
-fi
-sshd -t && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true)
+sshd -t 2>/dev/null && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true)
 
 # 6.5 部署 Fail2ban 24小时+累犯翻倍拉黑（动态探测 SSH 端口 + aggressive 模式）
 apt install -y fail2ban iptables nftables python3-systemd >/dev/null 2>&1 || true
-SSH_PORTS=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2}' | paste -sd, -)
-SSH_PORTS=${SSH_PORTS:-22}
+SSH_PORTS=$( (sshd -T 2>/dev/null || true) | awk '$1=="port"{print $2}' | paste -sd, - )
+SSH_PORTS="${SSH_PORTS:-22}"
 cat << EOF > /etc/fail2ban/jail.local
 [DEFAULT]
 bantime = 86400
@@ -361,9 +389,8 @@ cp -f /tmp/xray-install/xray "${XRAY_BIN}.new" && chmod +x "${XRAY_BIN}.new" && 
 cp -f /tmp/xray-install/geoip.dat /usr/local/x-ui/bin/geoip.dat 2>/dev/null || true
 cp -f /tmp/xray-install/geosite.dat /usr/local/x-ui/bin/geosite.dat 2>/dev/null || true
 rm -rf /tmp/xray-install
-systemctl start x-ui
-
 # 3. 10 年期 127.0.0.1 本地面板证书（仅在缺失时生成）
+mkdir -p /etc/x-ui
 if [ ! -f /etc/x-ui/panel_local.key ] || [ ! -f /etc/x-ui/panel_local.crt ]; then
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
       -keyout /etc/x-ui/panel_local.key -out /etc/x-ui/panel_local.crt \
@@ -371,8 +398,9 @@ if [ ! -f /etc/x-ui/panel_local.key ] || [ ! -f /etc/x-ui/panel_local.crt ]; the
 fi
 chmod 700 /etc/x-ui && chmod 600 /etc/x-ui/panel_local.key && chmod 644 /etc/x-ui/panel_local.crt
 
-# 4. 注入 connIdle 空闲回收、bufferSize 收敛、置顶防私网/BT/回国流量、全入站 routeOnly 嗅探与面板锁死 127.0.0.1
-XRAY_BUF=$([ "$(free -m | awk '/Mem:/ {print $2}')" -le 700 ] && echo 32 || echo 64) python3 - << 'EOF'
+# 4. 离线修改 x-ui.db（务必保持 x-ui 停止状态防锁竞争）：注入 connIdle、置顶防私网/BT/TCP 25/回国流量（前置 geosite:google 直连防误杀 Google Play）与面板锁死 127.0.0.1
+systemctl stop x-ui
+XRAY_BUF=$([ "$(LC_ALL=C free -m | awk '/^Mem:/ {print $2}')" -le 700 ] && echo 32 || echo 64) python3 - << 'EOF'
 import sqlite3, json, os
 
 db_path = '/etc/x-ui/x-ui.db'
@@ -431,12 +459,14 @@ custom_rules = [
     and not (r.get('outboundTag') == 'blocked' and r.get('protocol') == ['bittorrent'] and not r.get('ip') and not r.get('domain'))
 ]
 
-# IPOnDemand：在命中 IP 规则时按需解析，确保前置中转机不会因末尾 inboundTag 规则而跳过 geoip:cn/private 拦截
+# IPOnDemand：命中 IP 规则时按需解析；非中转直连机在 geoip:cn 前置放行 geosite:google，防止 Google Play / gstatic Anycast 节点误命中 geoip:cn 卡下载
 cfg.setdefault('routing', {})['domainStrategy'] = 'IPOnDemand'
 cfg['routing']['rules'] = [
     {'type': 'field', 'inboundTag': ['api'], 'outboundTag': 'api'},
     {'type': 'field', 'outboundTag': 'blocked', 'ip': ['geoip:private']},
     {'type': 'field', 'outboundTag': 'blocked', 'protocol': ['bittorrent']},
+    {'type': 'field', 'outboundTag': 'blocked', 'port': '25'},
+    {'type': 'field', 'domain': ['geosite:google'], 'outboundTag': 'direct'},
     {'type': 'field', 'outboundTag': 'blocked', 'ip': ['geoip:cn']},
 ] + custom_rules
 
@@ -541,14 +571,16 @@ systemctl restart x-ui
   3. **目标网站（`target` / `serverNames`）选型标准**：
      * 最低标准：**国外网站、支持 TLSv1.3 与 H2、域名非跳转用**（如主域名 301 跳转 `www.`，则直接填 `www.`）；
      * 加分项：与 VPS 地理位置/IP 相近、支持 OCSP Stapling、**服务端禁回国流量**。
-  4. **进阶加固**：可选通过 `./xray mldsa65` 生成 `mldsa65Seed` / `mldsa65Verify` 进行抗量子额外签名；遵循官方建议不随意启用 `limitFallbackUpload/Download` 回落限速。
+  4. **兼容性与进阶加固**：
+     * **`minClientVer: "1.0.0"` 必配**：Xray `v26.7.11+` 起若 `minClientVer` 留空会默认要求客户端 `>= 26.3.27`，导致 Clash (Mihomo)、sing-box 与旧版 Shadowrocket 握手直接拿到真证书拒连；脚本已默认显式写入 `"minClientVer": "1.0.0"`；
+     * 可选通过 `./xray mldsa65` 生成 `mldsa65Seed` / `mldsa65Verify` 进行抗量子额外签名；遵循官方建议不随意启用 `limitFallbackUpload/Download` 回落限速。
 
 ---
 
 ### 方案 2：Cloudflare CDN 优选（推荐 `VLESS + XHTTP + TLS`，默认 `2053` 端口）
 * **定位**：晚高峰抗拥堵兜底、彻底隐藏源站真实 IP、挽救已被阻断但未封全端口的机器。
 * **协议选型**：
-  * **首选 `XHTTP`（`network: "xhttp"`）**：采用标准 HTTP/2 语义 + XMUX 多路复用与随机填充，全面取代传统 WebSocket（`xhttpSettings` 仅配 `path` + `mode: "auto"`）；
+  * **首选 `XHTTP`（`network: "xhttp"`）**：采用标准 HTTP/2 语义 + XMUX 多路复用与随机填充，全面取代传统 WebSocket（过 Cloudflare CDN 时推荐 `mode: "packet-up"` 兼顾 Shadowrocket / v2rayN 全端稳定性，链接附带 `fp=chrome`）；
   * **兼容备选 `WS`**：仅在需兼容不支持 XHTTP 的老旧/第三方客户端时使用。
 * **小白 5 步保姆级 Cloudflare 后台配置教学**：
   1. **准备域名并托管到 Cloudflare**：将你自己的域名（任意后缀均可）NS 接入 Cloudflare。
@@ -567,7 +599,7 @@ systemctl restart x-ui
      * 如需提速，在客户端编辑该节点：**仅将「地址 (Address)」改为你的优选 IP 或优选域名**，**`Host` 和 `SNI` 必须保持为你在 Cloudflare 解析的域名（如 `cf.example.com`）不变**，端口保持 `2053`（或你所选 CF HTTPS 端口），且**绝不开启 `allowInsecure: true`**。
 * **客户端导入示例**：
   ```text
-  vless://<UUID>@<优选域名或IP>:2053?type=xhttp&mode=auto&security=tls&path=%2Fvless-xhttp&host=cf.example.com&sni=cf.example.com#CF-XHTTP-优选
+  vless://<UUID>@<优选域名或IP>:2053?type=xhttp&mode=packet-up&security=tls&path=%2Fvless-xhttp&host=cf.example.com&sni=cf.example.com&fp=chrome#CF-XHTTP-优选
   ```
 * **常见报错速查**：
 
