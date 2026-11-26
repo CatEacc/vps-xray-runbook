@@ -166,7 +166,7 @@ ExecStop=/usr/sbin/nft delete table inet smtp_guard
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload && systemctl enable smtp-guard.service 2>/dev/null || true
+systemctl daemon-reload && systemctl enable --now smtp-guard.service 2>/dev/null || true
 
 # 4. 日志上限与内存映射收敛（防写爆小硬盘 + 杜绝 journald 映射百兆日志占用物理内存）
 cat << 'EOF' > /etc/systemd/journald.conf
@@ -205,7 +205,7 @@ if [ -f /etc/gai.conf ]; then
 fi
 if [ ! -L /etc/resolv.conf ] && [ -f /etc/resolv.conf ]; then
     sed -i '/^options /d' /etc/resolv.conf
-    if [ -z "$(ip -6 addr show scope global 2>/dev/null | grep inet6)" ]; then
+    if [ -z "$(ip -6 addr show scope global 2>/dev/null | grep inet6 || true)" ]; then
         sed -i '/^nameserver .*:/d' /etc/resolv.conf
     fi
     echo "options timeout:1 attempts:2" >> /etc/resolv.conf
@@ -256,7 +256,7 @@ modprobe tcp_bbr 2>/dev/null || true
 modprobe nf_conntrack 2>/dev/null || true
 
 # 按物理内存自动分三档计算网络缓冲区（<=700M 防 OOM，1G 均衡，2G+ 高吞吐）
-MEM_MB=$(free -m | awk '/Mem:/ {print $2}')
+MEM_MB=$(LC_ALL=C free -m | awk '/Mem:/ {print $2}')
 if [ "${MEM_MB:-1000}" -le 700 ]; then
     RMEM_MAX=16777216; TCP_MAX=8388608; DEF_BUF=262144; CONN_MAX=65536
 elif [ "${MEM_MB:-1000}" -lt 1500 ]; then
@@ -482,6 +482,9 @@ for inb_id, sniff_raw, stream_raw in c.execute("SELECT id, sniffing, stream_sett
     so = st.setdefault('sockopt', {})
     so['tcpKeepAliveIdle'] = 120
     so['tcpKeepAliveInterval'] = 20
+    if st.get('security') == 'reality' and isinstance(st.get('realitySettings'), dict):
+        if not st['realitySettings'].get('minClientVer'):
+            st['realitySettings']['minClientVer'] = '1.0.0'
     c.execute("UPDATE inbounds SET stream_settings=? WHERE id=?", (json.dumps(st, indent=2), inb_id))
 
 for k, v in [
@@ -489,6 +492,8 @@ for k, v in [
     ('webListen', '127.0.0.1'),
     ('webCertFile', '/etc/x-ui/panel_local.crt'),
     ('webKeyFile', '/etc/x-ui/panel_local.key'),
+    ('subListen', '127.0.0.1'),
+    ('subEnable', 'false'),
 ]:
     c.execute("DELETE FROM settings WHERE key=?", (k,))
     c.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (k, v))
@@ -500,11 +505,11 @@ EOF
 
 # 5. 清理裸 IP 证书续签任务 + 配置 [3x-ipl] Fail2ban（显式关闭 bantime.increment 避免误伤正常用户）
 rm -rf /root/cert/ip /root/.acme.sh/[0-9]*.[0-9]*.[0-9]*.[0-9]* /var/log/x-ui/access.log 2>/dev/null || true
-crontab -l 2>/dev/null | grep -v "/root/cert/ip" | crontab - 2>/dev/null || true
+(crontab -l 2>/dev/null | grep -v "/root/cert/ip" || true) | crontab - 2>/dev/null || true
 chmod 700 /etc/x-ui
 mkdir -p /var/log/x-ui /etc/fail2ban/filter.d /etc/fail2ban/action.d /etc/fail2ban/jail.d
 touch /var/log/x-ui/3xipl.log /var/log/x-ui/3xipl-banned.log
-SSH_PORTS=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2}' | paste -sd, -)
+SSH_PORTS=$( (sshd -T 2>/dev/null || true) | awk '$1=="port"{print $2}' | paste -sd, - )
 SSH_PORTS=${SSH_PORTS:-22}
 PANEL_PORT=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webPort' LIMIT 1\").fetchone(); print(r[0].strip() if r and r[0] else '')" 2>/dev/null | tr -dc '0-9')
 EXEMPT_PORTS="${SSH_PORTS}${PANEL_PORT:+,$PANEL_PORT}"
@@ -634,7 +639,7 @@ systemctl restart x-ui
 
 1. **两步一键完成（直接使用顶部 `setup.sh` 方案 1）**：
    * **第 1 步（在家宽落地机上运行）**：选 `方案 1` -> 子菜单选 **`配置为后端家宽落地机（SS-2022）`**，脚本自动在随机高位端口创建 Shadowsocks-2022 入站、生成 32 字节 Base64 密钥并打印中转凭据（可选自动挂载 `nftables` 源 IP 白名单）。
-   * **第 2 步（在中国大陆优化机上运行）**：选 `方案 1`（或 `方案 3` Hy2） -> 询问是否中转后端家宽时选 `y`，粘贴刚才的 `家宽IP`、`端口`、`SS-2022 密钥`，脚本自动写入 `out-residential` 出站、置顶 `geoip:cn/private/bt` 熔断规则并输出客户端导入链接。
+   * **第 2 步（在中国大陆优化机上运行）**：选 `方案 1`（或 `方案 3` Hy2） -> 询问是否中转后端家宽时选 `y`，直接粘贴 `ss://` 分享链接（或填家宽 SSH 账密全自动部署拉回凭据），脚本自动写入按入站隔离的 `out-res-<tag>` 出站、置顶 `geoip:cn/private/bt/port:25` 熔断规则并输出客户端导入链接。
 2. **Hy2 走本地 SOCKS5 中转的省内存铁律**：
    * 若 Hy2 通过 `127.0.0.1:10855` 转发给本机 Xray，因 Xray 已加载 `geoip.dat`，512M/1G 小内存机器应删掉 Hy2 配置中的 `geoip.dat` 与 `reject(geoip:cn)`，可立省约 `110MB` 物理内存。
 3. **驻地真家宽落地机（AT&T `Nokia BGW320` 光猫 `/26` 合租 + Windows Hyper-V 母鸡）抗跳 Ping 与防抽内存脚本**：
