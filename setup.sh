@@ -14,6 +14,7 @@
 # ==============================================================================
 
 set -euo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 trap 'rm -rf /tmp/setup_result.txt /tmp/xray-install' EXIT
 
 XUI_VERSION="v3.11.0"
@@ -274,6 +275,9 @@ prompt_relay_target() {
             RES_IP=$(printf "%s\n" "$remote_out" | grep -oE 'SS_IP=[^[:space:]]+' | tail -n 1 | cut -d'=' -f2- || true)
             RES_PORT=$(printf "%s\n" "$remote_out" | grep -oE 'SS_PORT=[0-9]+' | tail -n 1 | cut -d'=' -f2- || true)
             RES_SS_PASS=$(printf "%s\n" "$remote_out" | grep -oE 'SS_PASS=[^[:space:]]+' | tail -n 1 | cut -d'=' -f2- || true)
+            if [ -z "$RES_IP" ] || [ "$RES_IP" = "YOUR_SERVER_IP" ] || [ "$RES_IP" = "未知" ]; then
+                RES_IP="$RES_SSH_IP"
+            fi
             if [ -n "$RES_IP" ] && [ -n "$RES_PORT" ] && [ -n "$RES_SS_PASS" ]; then
                 printf "  ${GREEN}-> [自动对接成功]${R} 家宽落地已就绪: ${CYAN}%s:%s${R} (已自动白名单放行本机 IP)\n" "$RES_IP" "$RES_PORT"
                 return 0
@@ -751,7 +755,7 @@ EXPPY
         echo "  本机家宽 / 商宽 / 机房 IP 与环境快检（纯只读，不碰流媒体）"
         echo "=================================================================="
         SERVER_IP="$SERVER_IP" python3 - << 'ISPPY'
-import os, json, socket, subprocess, urllib.request
+import os, re, json, socket, subprocess, urllib.request
 
 ip = os.environ.get("SERVER_IP", "").strip()
 if not ip or ip in ("未知", "YOUR_SERVER_IP"):
@@ -774,7 +778,7 @@ if ip:
 
 ptr_low = ptr.lower()
 ptr_is_biz = any(k in ptr_low for k in (".biz.", "business", ".corp.", "-static-", "static."))
-ptr_is_res = any(k in ptr_low for k in (".res.", "home", "dyn", "dhcp", "pool", "lightspeed", "fios", "cpe."))
+ptr_is_res = any(k in ptr_low for k in (".res.", "home", "dyn", "dhcp", "pool", "lightspeed", "fios", "cpe.", "cpe-", "hsd1", "cable"))
 if ptr == "NONE":
     ptr_tag = "无反解（需结合下方双类型判断）"
 elif ptr_is_biz:
@@ -862,10 +866,13 @@ except Exception:
 print(f"  出站 TCP 25: {smtp_stat}")
 
 print("------------------------------------------------------------------")
-dc_kw = ("cogent", "psinet", "hosting", "datacenter", "data center", "cloud", "server", "vps", "digitalocean", "amazon", "aws", "google", "oracle", "hetzner", "ovh", "vultr", "linode", "akamai", "choopa", "colocrossing", "multacom", "zenlayer", "dmit")
 comb_org = f"{asn_str} {isp_str} {org_str} {rdap_net} {rdap_org}".lower()
-looks_dc_org = any(k in comb_org for k in dc_kw)
-asn_tokens = {w for w in asn_str.lower().replace(",", " ").replace(".", " ").split() if len(w) >= 4 and not w.startswith("as")}
+is_gfiber = "google fiber" in comb_org or "as16591" in comb_org
+dc_sub_kw = ("cogent", "psinet", "hosting", "datacenter", "data center", "digitalocean", "amazon", "google cloud", "google llc", "oracle", "hetzner", "vultr", "linode", "akamai", "choopa", "colocrossing", "multacom", "zenlayer", "dmit")
+dc_word_kw = {"cloud", "server", "vps", "aws", "ovh", "gcp"}
+org_words = set(re.findall(r"[a-z0-9]+", comb_org))
+looks_dc_org = (not is_gfiber) and (any(k in comb_org for k in dc_sub_kw) or bool(org_words & dc_word_kw))
+asn_tokens = {w for w in re.findall(r"[a-z0-9]+", asn_str.lower()) if len(w) >= 4 and not re.match(r"^as\d+$", w)}
 rdap_low = f"{rdap_net} {rdap_org}".lower()
 is_broadcast_mismatch = bool(asn_tokens and rdap_org and not any(t in rdap_low for t in asn_tokens))
 
@@ -1195,9 +1202,14 @@ if command -v crontab >/dev/null 2>&1; then
 fi
 
 # 确保 x-ui.db 已完成首次建表迁移后立即停止服务，保证后续 SQLite 离线安全写入
-if [ ! -s /etc/x-ui/x-ui.db ]; then
+if ! python3 -c "import sqlite3; c=sqlite3.connect('/etc/x-ui/x-ui.db'); assert c.execute(\"SELECT 1 FROM sqlite_master WHERE type='table' AND name='inbounds'\").fetchone()" 2>/dev/null; then
     systemctl start x-ui 2>/dev/null || true
-    sleep 2
+    for _ in $(seq 1 20); do
+        if python3 -c "import sqlite3; c=sqlite3.connect('/etc/x-ui/x-ui.db'); assert c.execute(\"SELECT 1 FROM sqlite_master WHERE type='table' AND name='inbounds'\").fetchone()" 2>/dev/null; then
+            break
+        fi
+        sleep 0.5
+    done
 fi
 systemctl stop x-ui 2>/dev/null || true
 
@@ -1370,7 +1382,14 @@ def upsert_or_reuse_inbound(remark, listen, in_port, proto, settings_obj, stream
     ex = c.execute("SELECT id, remark, protocol, settings, stream_settings, tag FROM inbounds WHERE port=?", (in_port,)).fetchone()
     if ex:
         if ex[2] != proto:
-            raise SystemExit(f"端口 {in_port} 已被 {ex[2]} 协议占用，请更换监听端口！")
+            raise SystemExit(f"端口 {in_port} 已被 {ex[2]} 协议占用，请更换监听端口或在面板删除旧入站！")
+        ex_st = json.loads(ex[4] or '{}')
+        want_st = stream_obj or {}
+        ex_net = 'tcp' if ex_st.get('network', 'tcp') in ('tcp', 'raw') else ex_st.get('network')
+        want_net = 'tcp' if want_st.get('network', 'tcp') in ('tcp', 'raw') else want_st.get('network')
+        if (ex_net, ex_st.get('security', 'none')) != (want_net, want_st.get('security', 'none')):
+            raise SystemExit(f"端口 {in_port} 已存在不同传输/安全模式的节点 ({ex_net}+{ex_st.get('security', 'none')})，请更换监听端口或在 3x-ui 面板删除旧入站后重跑！")
+        c.execute("UPDATE inbounds SET enable=1 WHERE id=?", (ex[0],))
         return ex, True
     if client_email:
         client_email = unique_email(client_email)

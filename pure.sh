@@ -6,6 +6,7 @@
 # 规范: 100% 对齐 Project X / RPRX 官方文档 (XHTTP / Vision REALITY / mldsa65 / SS-2022)
 # ==============================================================================
 set -euo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 trap 'rm -rf /tmp/pure_result.txt /tmp/xray-pure' EXIT
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -464,9 +465,9 @@ EXPPY
         echo "  本机家宽 / 商宽 / 机房 IP 与环境快检（纯只读，不碰流媒体）"
         echo "=================================================================="
         SERVER_IP="$SERVER_IP" python3 - << 'ISPPY'
-import os, json, socket, subprocess, urllib.request
+import os, re, json, socket, subprocess, urllib.request
 ip = os.environ.get("SERVER_IP", "").strip()
-if not ip or ip == "未知":
+if not ip or ip in ("未知", "YOUR_SERVER_IP"):
     for u in ("https://api.ipify.org", "https://ifconfig.me/ip"):
         try:
             ip = urllib.request.urlopen(u, timeout=4).read().decode().strip()
@@ -480,7 +481,7 @@ if ip:
     except Exception: ptr = "NONE"
 ptr_low = ptr.lower()
 ptr_is_biz = any(k in ptr_low for k in (".biz.", "business", ".corp.", "-static-", "static."))
-ptr_is_res = any(k in ptr_low for k in (".res.", "home", "dyn", "dhcp", "pool", "lightspeed", "fios", "cpe."))
+ptr_is_res = any(k in ptr_low for k in (".res.", "home", "dyn", "dhcp", "pool", "lightspeed", "fios", "cpe.", "cpe-", "hsd1", "cable"))
 ptr_tag = "无反解（需结合下方属性判断）" if ptr == "NONE" else ("预警：疑似商宽前缀" if ptr_is_biz else ("住宅宽带特征" if ptr_is_res else "常规反解"))
 print(f"  rDNS / PTR:  {ptr}  [{ptr_tag}]")
 asn_str = org_str = isp_str = loc = ""
@@ -531,10 +532,13 @@ except Exception:
     pass
 print(f"  出站 TCP 25: {smtp_stat}")
 print("------------------------------------------------------------------")
-dc_kw = ("cogent", "psinet", "hosting", "datacenter", "data center", "cloud", "server", "vps", "digitalocean", "amazon", "aws", "google", "oracle", "hetzner", "ovh", "vultr", "linode", "akamai", "choopa", "colocrossing", "multacom", "zenlayer", "dmit")
 comb_org = f"{asn_str} {isp_str} {org_str} {rdap_net} {rdap_org}".lower()
-looks_dc = any(k in comb_org for k in dc_kw)
-asn_toks = {w for w in asn_str.lower().replace(",", " ").replace(".", " ").split() if len(w) >= 4 and not w.startswith("as")}
+is_gfiber = "google fiber" in comb_org or "as16591" in comb_org
+dc_sub_kw = ("cogent", "psinet", "hosting", "datacenter", "data center", "digitalocean", "amazon", "google cloud", "google llc", "oracle", "hetzner", "vultr", "linode", "akamai", "choopa", "colocrossing", "multacom", "zenlayer", "dmit")
+dc_word_kw = {"cloud", "server", "vps", "aws", "ovh", "gcp"}
+org_words = set(re.findall(r"[a-z0-9]+", comb_org))
+looks_dc = (not is_gfiber) and (any(k in comb_org for k in dc_sub_kw) or bool(org_words & dc_word_kw))
+asn_toks = {w for w in re.findall(r"[a-z0-9]+", asn_str.lower()) if len(w) >= 4 and not re.match(r"^as\d+$", w)}
 is_mismatch = bool(asn_toks and rdap_org and not any(t in f"{rdap_net} {rdap_org}".lower() for t in asn_toks))
 if is_dc is True or looks_dc:
     v = "[机房商业 VPS / 骨干网段] 建议作为前置迎宾/中转机（443 REALITY / CF CDN）"
