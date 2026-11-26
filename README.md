@@ -745,3 +745,16 @@ Host my-residential-att
 ---
 
 > **免责声明**：本项目及脚本仅供 Linux 服务器性能调优、网络协议研究与合规技术学习使用，请遵守当地法律法规，勿用于任何违规用途。
+
+
+---
+
+## Star History
+
+<a href="https://www.star-history.com/#CatEacc/vps-xray-runbook&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=CatEacc/vps-xray-runbook&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=CatEacc/vps-xray-runbook&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=CatEacc/vps-xray-runbook&type=Date" width="100%" />
+ </picture>
+</a>
