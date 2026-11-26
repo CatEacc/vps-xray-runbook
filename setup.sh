@@ -1356,10 +1356,26 @@ def sync_v3_client(inb_id, email, client_uuid, client_flow, sub_id):
         else:
             c.execute("INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id) VALUES (?, ?)", (cid, inb_id))
 
+def unique_email(base_email):
+    cand = base_email
+    while True:
+        hit = c.execute("SELECT 1 FROM client_traffics WHERE email=? LIMIT 1", (cand,)).fetchone()
+        if not hit and has_clients_tbl:
+            hit = c.execute("SELECT 1 FROM clients WHERE email=? LIMIT 1", (cand,)).fetchone()
+        if not hit:
+            return cand
+        cand = f"{base_email}-{secrets.token_hex(2)}"
+
 def upsert_or_reuse_inbound(remark, listen, in_port, proto, settings_obj, stream_obj, tag, client_email=None, client_uuid=None, client_flow="", sub_id=""):
     ex = c.execute("SELECT id, remark, protocol, settings, stream_settings, tag FROM inbounds WHERE port=?", (in_port,)).fetchone()
     if ex:
+        if ex[2] != proto:
+            raise SystemExit(f"端口 {in_port} 已被 {ex[2]} 协议占用，请更换监听端口！")
         return ex, True
+    if client_email:
+        client_email = unique_email(client_email)
+        if isinstance(settings_obj, dict) and settings_obj.get("clients"):
+            settings_obj["clients"][0]["email"] = client_email
     sniff = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "metadataOnly": False, "routeOnly": True}
     c.execute("""
         INSERT INTO inbounds (user_id, up, down, total, remark, enable, expiry_time, listen, port, protocol, settings, stream_settings, tag, sniffing)
@@ -1397,10 +1413,13 @@ def build_link_from_row(rem, in_port, proto, s_str, st_str):
             return 'LINK', f"vless://{u}@{server_ip}:{in_port}?type=tcp&security=reality&pbk={pbk}&fp=chrome&sni={sni_v}&sid={sid_v}&spx=%2F{fl_q}#{r_enc}"
         if sec == 'tls':
             host_v = st.get('tlsSettings', {}).get('serverName', cf_domain)
-            xh = st.get('xhttpSettings', {})
-            p_enc = urllib.parse.quote(xh.get('path', '/vless-xhttp'), safe='')
-            xm = xh.get('mode', 'packet-up')
-            return 'LINK', f"vless://{u}@{host_v}:{in_port}?type=xhttp&path={p_enc}&mode={xm}&host={host_v}&security=tls&sni={host_v}&fp=chrome#{r_enc}"
+            if net == 'xhttp':
+                xh = st.get('xhttpSettings', {})
+                p_enc = urllib.parse.quote(xh.get('path', '/vless-xhttp'), safe='')
+                xm = xh.get('mode', 'packet-up')
+                return 'LINK', f"vless://{u}@{host_v}:{in_port}?type=xhttp&path={p_enc}&mode={xm}&host={host_v}&security=tls&sni={host_v}&fp=chrome#{r_enc}"
+            p_enc = urllib.parse.quote(st.get('wsSettings', {}).get('path', '/'), safe='')
+            return 'LINK', f"vless://{u}@{host_v}:{in_port}?type={net}&path={p_enc}&host={host_v}&security=tls&sni={host_v}&fp=chrome#{r_enc}"
     return '', ''
 
 inbound_tag_for_relay = None
@@ -1538,9 +1557,9 @@ old_rules = cfg.setdefault('routing', {}).setdefault('rules', [])
 custom_rules = [
     r for r in old_rules
     if not (r.get('outboundTag') == 'api' and r.get('inboundTag') == ['api'])
-    and not (r.get('outboundTag') == 'blocked' and set(r.get('ip', [])) <= {'geoip:private', 'geoip:cn'} and not r.get('protocol') and not r.get('inboundTag') and not r.get('user'))
-    and not (r.get('outboundTag') == 'blocked' and r.get('protocol') == ['bittorrent'] and not r.get('ip') and not r.get('domain'))
-    and not (r.get('outboundTag') == 'blocked' and str(r.get('port', '')) == '25' and not r.get('ip') and not r.get('domain'))
+    and not (r.get('outboundTag') == 'blocked' and bool(r.get('ip')) and set(r['ip']) <= {'geoip:private', 'geoip:cn'} and not r.get('domain') and not r.get('port') and not r.get('network') and not r.get('protocol') and not r.get('inboundTag') and not r.get('user'))
+    and not (r.get('outboundTag') == 'blocked' and r.get('protocol') == ['bittorrent'] and not r.get('ip') and not r.get('domain') and not r.get('port'))
+    and not (r.get('outboundTag') == 'blocked' and str(r.get('port', '')) == '25' and not r.get('ip') and not r.get('domain') and not r.get('protocol'))
     and not (r.get('outboundTag') == 'direct' and r.get('domain') == ['geosite:google'] and not r.get('ip') and not r.get('inboundTag') and not r.get('user'))
     and not (inbound_tag_for_relay and r.get('inboundTag') == [inbound_tag_for_relay] and str(r.get('outboundTag', '')).startswith('out-res'))
     and not (str(r.get('outboundTag', '')).startswith('out-res') and r.get('outboundTag') not in valid_out_tags)
@@ -1587,15 +1606,20 @@ import os, re, ipaddress
 port = int(os.environ["LISTEN_PORT"])
 raw = os.environ.get("RES_WHITELIST_IP", "")
 tokens = [t.strip() for t in re.split(r"[,，\s]+", raw) if t.strip()]
-v4, v6 = ["127.0.0.0/8"], ["::1/128"]
+v4_nets = [ipaddress.ip_network("127.0.0.0/8")]
+v6_nets = [ipaddress.ip_network("::1/128")]
+user_cnt = 0
 for t in tokens:
     net = ipaddress.ip_network(t, strict=False)
+    user_cnt += 1
     if net.version == 4:
-        v4.append(str(net))
+        v4_nets.append(net)
     else:
-        v6.append(str(net))
-if len(v4) == 1 and len(v6) == 1:
+        v6_nets.append(net)
+if user_cnt == 0:
     raise SystemExit(1)
+v4 = [str(n) for n in ipaddress.collapse_addresses(v4_nets)]
+v6 = [str(n) for n in ipaddress.collapse_addresses(v6_nets)]
 lines = [
     "table inet res_guard",
     "delete table inet res_guard",
@@ -1679,7 +1703,7 @@ if [ "$MODE" = "3" ]; then
 #   down: 100 mbps"
     fi
 
-    if [[ "$ENABLE_RELAY" =~ ^[Yy]$ ]] && [ -n "$RES_IP" ]; then
+    if [[ "$ENABLE_RELAY" =~ ^[Yy]$ ]] && [ -n "$RES_IP" ] && [ -n "$RES_PORT" ] && [ -n "$RES_SS_PASS" ]; then
         ACL_GEOIP_LINE=""
         ACL_CN_LINE=""
         OUTBOUND_BLOCK="outbounds:

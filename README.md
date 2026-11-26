@@ -455,8 +455,10 @@ old_rules = cfg.setdefault('routing', {}).setdefault('rules', [])
 custom_rules = [
     r for r in old_rules
     if not (r.get('outboundTag') == 'api' and r.get('inboundTag') == ['api'])
-    and not (r.get('outboundTag') == 'blocked' and set(r.get('ip', [])) <= {'geoip:private', 'geoip:cn'} and set(r.get('domain', [])) <= {'geosite:cn'} and not r.get('protocol') and not r.get('inboundTag') and not r.get('user'))
-    and not (r.get('outboundTag') == 'blocked' and r.get('protocol') == ['bittorrent'] and not r.get('ip') and not r.get('domain'))
+    and not (r.get('outboundTag') == 'blocked' and bool(r.get('ip')) and set(r['ip']) <= {'geoip:private', 'geoip:cn'} and not r.get('domain') and not r.get('port') and not r.get('network') and not r.get('protocol') and not r.get('inboundTag') and not r.get('user'))
+    and not (r.get('outboundTag') == 'blocked' and r.get('protocol') == ['bittorrent'] and not r.get('ip') and not r.get('domain') and not r.get('port'))
+    and not (r.get('outboundTag') == 'blocked' and str(r.get('port', '')) == '25' and not r.get('ip') and not r.get('domain') and not r.get('protocol'))
+    and not (r.get('outboundTag') == 'direct' and r.get('domain') == ['geosite:google'] and not r.get('ip') and not r.get('inboundTag') and not r.get('user'))
 ]
 
 # IPOnDemand：命中 IP 规则时按需解析；非中转直连机在 geoip:cn 前置放行 geosite:google，防止 Google Play / gstatic Anycast 节点误命中 geoip:cn 卡下载

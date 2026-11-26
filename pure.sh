@@ -833,9 +833,9 @@ old_rules = cfg.get("routing", {}).get("rules", [])
 custom_rules = []
 for r in old_rules:
     if r.get("outboundTag") == "blocked" and (
-        set(r.get("ip", [])) <= {"geoip:private", "geoip:cn"}
-        or r.get("protocol") == ["bittorrent"]
-        or str(r.get("port", "")) == "25"
+        (bool(r.get("ip")) and set(r["ip"]) <= {"geoip:private", "geoip:cn"} and not r.get("domain") and not r.get("port") and not r.get("network") and not r.get("protocol") and not r.get("inboundTag") and not r.get("user"))
+        or (r.get("protocol") == ["bittorrent"] and not r.get("ip") and not r.get("domain") and not r.get("port"))
+        or (str(r.get("port", "")) == "25" and not r.get("ip") and not r.get("domain") and not r.get("protocol"))
     ):
         continue
     if r.get("outboundTag") == "direct" and r.get("domain") == ["geosite:google"] and not r.get("ip") and not r.get("inboundTag"):
@@ -966,7 +966,8 @@ tmp_cfg = cfg_path + ".new"
 with open(tmp_cfg, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
 os.chmod(tmp_cfg, 0o600)
-subprocess.check_call([xray_bin, "run", "-test", "-config", tmp_cfg])
+import sys
+subprocess.check_call([xray_bin, "run", "-test", "-config", tmp_cfg], stdout=sys.stderr)
 if os.path.exists(cfg_path):
     os.replace(cfg_path, cfg_path + ".bak")
 os.replace(tmp_cfg, cfg_path)
@@ -983,15 +984,20 @@ import os, re, ipaddress
 port = int(os.environ["LISTEN_PORT"])
 raw = os.environ.get("RES_WHITELIST_IP", "")
 tokens = [t.strip() for t in re.split(r"[,，\s]+", raw) if t.strip()]
-v4, v6 = ["127.0.0.0/8"], ["::1/128"]
+v4_nets = [ipaddress.ip_network("127.0.0.0/8")]
+v6_nets = [ipaddress.ip_network("::1/128")]
+user_cnt = 0
 for t in tokens:
     net = ipaddress.ip_network(t, strict=False)
+    user_cnt += 1
     if net.version == 4:
-        v4.append(str(net))
+        v4_nets.append(net)
     else:
-        v6.append(str(net))
-if len(v4) == 1 and len(v6) == 1:
+        v6_nets.append(net)
+if user_cnt == 0:
     raise SystemExit(1)
+v4 = [str(n) for n in ipaddress.collapse_addresses(v4_nets)]
+v6 = [str(n) for n in ipaddress.collapse_addresses(v6_nets)]
 lines = [
     "table inet res_guard",
     "delete table inet res_guard",
