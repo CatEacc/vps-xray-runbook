@@ -38,7 +38,9 @@ MEM_SHOW=$(LC_ALL=C free -m 2>/dev/null | awk '/^Mem:/ {print $2}')
 MEM_SHOW="${MEM_SHOW:-0}"
 BBR_STAT=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
 MPTCP_STAT=$(sysctl -n net.mptcp.enabled 2>/dev/null || echo "n/a")
-SERVER_IP=$(curl -4fsSm 4 https://api.ipify.org 2>/dev/null || curl -4fsSm 4 https://ifconfig.me/ip 2>/dev/null || echo "未知")
+SERVER_IP=$(curl -4fsSm 4 https://api.ipify.org 2>/dev/null || curl -4fsSm 4 https://ifconfig.me/ip 2>/dev/null || curl -6fsSm 4 https://api64.ipify.org 2>/dev/null || echo "YOUR_SERVER_IP")
+SERVER_IP=$(printf "%s" "$SERVER_IP" | tr -d '[:space:]')
+[[ "$SERVER_IP" =~ ^[0-9a-fA-F.:]+$ ]] || SERVER_IP="YOUR_SERVER_IP"
 
 SCRIPT_VER=$(curl -fsSm 2 https://api.github.com/repos/CatEacc/vps-xray-runbook/releases/latest 2>/dev/null | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n 1 | cut -d'"' -f4 || true)
 SCRIPT_VER="${SCRIPT_VER:-v1.2.4}"
@@ -66,7 +68,7 @@ BANNER
 svc_badge() {
     if systemctl is-active --quiet "$1" 2>/dev/null; then
         printf "${GREEN}● 运行中${R}"
-    elif systemctl list-unit-files 2>/dev/null | grep -q "^$1"; then
+    elif systemctl list-unit-files "${1}.service" 2>/dev/null | grep -q "^${1}\.service"; then
         printf "${YELLOW}● 已停止${R}"
     else
         printf "${DIM}○ 未安装${R}"
@@ -111,7 +113,7 @@ if [ -z "$MODE" ]; then
     printf "      ${DIM}BBR+FQ / 按内存分档缓冲 / 1GB Swap / MPTCP 防护 / 默认封 TCP 25 / Fail2ban${R}\n"
     printf "  ${GREEN}[4]${R} ${WHITE}一键导出所有节点链接 & 二维码${R} ${CYAN}· 只读${R}\n"
     printf "  ${GREEN}[5]${R} ${WHITE}本机家宽 / 商宽 / 机房 IP 与环境快检${R} ${SKY}· 只读 · 不测流媒体${R}\n\n"
-    read -rp "$(printf "${YELLOW}  请输入方案编号 [1-5] (回车默认 1): ${R}")" MODE
+    read -rp "$(printf "${YELLOW}  请输入方案编号 [1-5] (回车默认 1): ${R}")" MODE || MODE="1"
     MODE="${MODE:-1}"
 fi
 
@@ -233,10 +235,11 @@ if "@" in body:
     if ":" not in cred_dec:
         cred_dec = b64dec(cred_dec)
     pwd = cred_dec.split(":", 1)[1] if ":" in cred_dec else cred_dec
-    host, port = hp.rsplit(":", 1)
-    port = port.strip()
-    if port.isdigit() and 1 <= int(port) <= 65535:
-        print(f"{host.strip('[]')}|{port}|{pwd.strip()}")
+    if ":" in hp:
+        host, port = hp.rsplit(":", 1)
+        port = port.strip()
+        if port.isdigit() and 1 <= int(port) <= 65535:
+            print(f"{host.strip('[]')}|{port}|{pwd.strip()}")
 SSPY
             ) || true
             if [ -n "$parsed" ]; then
@@ -386,10 +389,11 @@ SNIPY
         ;;
     4|links)
         echo ""
+        command -v python3 >/dev/null 2>&1 || { echo "  [提示] 当前系统缺少 python3，请先执行 apt-get update && apt-get install -y python3"; exit 1; }
         echo "=================================================================="
         echo "  本机纯原生 Xray-core 节点链接导出（纯只读）"
         echo "=================================================================="
-        SERVER_IP="$SERVER_IP" XRAY_CFG="$XRAY_CFG" python3 - << 'EXPPY'
+        SERVER_IP="$SERVER_IP" XRAY_CFG="$XRAY_CFG" XRAY_BIN="$XRAY_BIN" python3 - << 'EXPPY'
 import os, json, base64, urllib.parse, subprocess, shutil
 
 def print_qr(url):
@@ -400,7 +404,9 @@ def print_qr(url):
             pass
 
 cfg_path = os.environ["XRAY_CFG"]
+xray_bin = os.environ.get("XRAY_BIN", "/usr/local/bin/xray")
 ip = os.environ["SERVER_IP"]
+uri_ip = f"[{ip}]" if ":" in ip and not ip.startswith("[") else ip
 if not os.path.exists(cfg_path):
     print(f"  未找到 {cfg_path}")
     raise SystemExit(0)
@@ -421,19 +427,39 @@ for inb in cfg.get("inbounds", []):
         for cl in s.get("clients", []):
             uid = cl.get("id", "")
             flow = cl.get("flow", "")
-            conn_host = ip
+            conn_host = uri_ip
             q = [f"type={url_net}", "encryption=none", f"security={sec}"]
             if sec == "reality":
                 rs = st.get("realitySettings", {})
                 sni = (rs.get("serverNames") or [""])[0]
                 sid = (rs.get("shortIds") or [""])[0]
                 m = meta.get(tag, {})
-                pbk = m.get("pbk", "<请查看部署输出公钥>")
+                pbk = m.get("pbk", "")
+                if not pbk and rs.get("privateKey") and os.path.exists(xray_bin):
+                    try:
+                        out = subprocess.check_output([xray_bin, "x25519", "-i", rs["privateKey"]], text=True)
+                        for ln in out.splitlines():
+                            if "Public" in ln or "Password" in ln:
+                                pbk = ln.split(":", 1)[1].strip()
+                                break
+                    except Exception:
+                        pass
+                pbk = pbk or "<请查看部署输出公钥>"
+                pqv = m.get("pqv", "")
+                if not pqv and rs.get("mldsa65Seed") and os.path.exists(xray_bin):
+                    try:
+                        out = subprocess.check_output([xray_bin, "mldsa65", "-i", rs["mldsa65Seed"]], text=True)
+                        for ln in out.splitlines():
+                            if "Verify" in ln:
+                                pqv = ln.split(":", 1)[1].strip()
+                                break
+                    except Exception:
+                        pass
                 q += [f"pbk={pbk}", "fp=chrome", f"sni={sni}", f"sid={sid}", "spx=%2F"]
-                if m.get("pqv"):
-                    q.append(f"pqv={urllib.parse.quote(m['pqv'], safe='')}")
+                if pqv:
+                    q.append(f"pqv={urllib.parse.quote(pqv, safe='')}")
             elif sec == "tls":
-                host = meta.get(tag, {}).get("host", "cf.example.com")
+                host = st.get("tlsSettings", {}).get("serverName") or meta.get(tag, {}).get("host", "cf.example.com")
                 conn_host = host
                 q += [f"sni={host}", f"host={host}", "fp=chrome"]
             if net == "xhttp":
@@ -449,7 +475,7 @@ for inb in cfg.get("inbounds", []):
         method = s.get("method", "2022-blake3-aes-256-gcm")
         pwd = s.get("password", "")
         cred = base64.urlsafe_b64encode(f"{method}:{pwd}".encode()).decode().rstrip("=")
-        link = f"ss://{cred}@{ip}:{port}#{urllib.parse.quote(tag)}"
+        link = f"ss://{cred}@{uri_ip}:{port}#{urllib.parse.quote(tag)}"
         print(f"  [{tag}] {link}")
         print(f"    (家宽中转参数: IP={ip} | PORT={port} | PASS={pwd})")
         found += 1
@@ -461,6 +487,7 @@ EXPPY
         ;;
     5)
         echo ""
+        command -v python3 >/dev/null 2>&1 || { echo "  [提示] 当前系统缺少 python3，请先执行 apt-get update && apt-get install -y python3"; exit 1; }
         echo "=================================================================="
         echo "  本机家宽 / 商宽 / 机房 IP 与环境快检（纯只读，不碰流媒体）"
         echo "=================================================================="
@@ -495,6 +522,13 @@ try:
         is_dc, is_proxy, is_mobile = bool(d.get("hosting")), bool(d.get("proxy")), bool(d.get("mobile"))
 except Exception:
     pass
+if not asn_str and ip:
+    try:
+        d = json.loads(urllib.request.urlopen(f"https://ipinfo.io/{ip}/json", timeout=5).read().decode())
+        asn_str = d.get("org", "")
+        loc = loc or f"{d.get('country', '')} / {d.get('region', '')} / {d.get('city', '')}".strip(" /")
+    except Exception:
+        pass
 print(f"  归属地区:    {loc or '未知'}")
 print(f"  ASN / 组织:  {asn_str or org_str or '未知'}")
 if is_dc is not None:
@@ -566,8 +600,8 @@ esac
 # ------------------------------------------------------------------------------
 echo "[1/4] 更新依赖并配置原子钟 / 1GB Swap / Journald 50M / 默认封禁出站 TCP 25 / Fail2ban..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y && apt-get install -y curl wget unzip chrony nftables fail2ban python3 python3-systemd openssl qrencode || \
-  apt-get install -y curl wget unzip chrony nftables fail2ban python3 python3-systemd openssl
+apt-get -o DPkg::Lock::Timeout=60 update -y && (apt-get -o DPkg::Lock::Timeout=60 install -y curl wget unzip chrony nftables fail2ban python3 python3-systemd openssl qrencode || \
+  apt-get -o DPkg::Lock::Timeout=60 install -y curl wget unzip chrony nftables fail2ban python3 openssl)
 
 systemctl enable --now chrony 2>/dev/null || true
 chronyc makestep 2>/dev/null || true
@@ -657,7 +691,7 @@ ExecStop=/usr/sbin/nft delete table inet smtp_guard
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload && systemctl enable smtp-guard.service >/dev/null 2>&1 || true
+    systemctl daemon-reload && systemctl enable --now smtp-guard.service >/dev/null 2>&1 || true
 fi
 
 echo "[2/4] 写入按内存分档的高并发网络内核栈 (BBR + FQ + MPTCP=0)..."
@@ -808,6 +842,7 @@ res_port = os.environ["RES_PORT"].strip()
 res_pass = os.environ["RES_SS_PASS"].strip()
 buf_kb = int(os.environ.get("XRAY_BUF", "64"))
 server_ip = os.environ["SERVER_IP"]
+uri_ip = f"[{server_ip}]" if ":" in server_ip and not server_ip.startswith("[") else server_ip
 xray_bin = os.environ["XRAY_BIN"]
 cfg_path = os.environ["XRAY_CFG"]
 meta_path = "/usr/local/etc/xray/.client_meta.json"
@@ -853,12 +888,12 @@ if mode == "1" and submode == "3":
     tag = f"ss-res-{port}"
     ss_pass = base64.b64encode(secrets.token_bytes(32)).decode()
     inbounds.append({
-        "tag": tag, "listen": "0.0.0.0", "port": port, "protocol": "shadowsocks",
+        "tag": tag, "listen": "::", "port": port, "protocol": "shadowsocks",
         "settings": {"method": "2022-blake3-aes-256-gcm", "password": ss_pass, "network": "tcp,udp"},
         "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
     })
     cred = base64.urlsafe_b64encode(f"2022-blake3-aes-256-gcm:{ss_pass}".encode()).decode().rstrip("=")
-    share_link = f"ss://{cred}@{server_ip}:{port}#{urllib.parse.quote(tag)}"
+    share_link = f"ss://{cred}@{uri_ip}:{port}#{urllib.parse.quote(tag)}"
     print("RESULT_TYPE=RESIDENTIAL_SS")
     print(f"SS_IP={server_ip}")
     print(f"SS_PORT={port}")
@@ -900,7 +935,7 @@ elif mode == "1":
     if not is_xhttp:
         client_obj["flow"] = "xtls-rprx-vision"
     inbounds.append({
-        "tag": tag, "listen": "0.0.0.0", "port": port, "protocol": "vless",
+        "tag": tag, "listen": "::", "port": port, "protocol": "vless",
         "settings": {"clients": [client_obj], "decryption": "none"},
         "streamSettings": st,
         "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
@@ -910,18 +945,18 @@ elif mode == "1":
     if is_xhttp: q += ["path=%2Fvless-xhttp", "mode=auto"]
     else: q.append("flow=xtls-rprx-vision")
     if pq_verify: q.append(f"pqv={urllib.parse.quote(pq_verify, safe='')}")
-    share_link = f"vless://{uid}@{server_ip}:{port}?{'&'.join(q)}#{urllib.parse.quote(tag)}"
+    share_link = f"vless://{uid}@{uri_ip}:{port}?{'&'.join(q)}#{urllib.parse.quote(tag)}"
     print("RESULT_TYPE=LINK")
 elif mode == "2":
     uid = str(uuid.uuid4())
     tag = f"vless-cf-xhttp-{port}"
     inbounds.append({
-        "tag": tag, "listen": "0.0.0.0", "port": port, "protocol": "vless",
+        "tag": tag, "listen": "::", "port": port, "protocol": "vless",
         "settings": {"clients": [{"id": uid, "email": f"cf-{port}"}], "decryption": "none"},
         "streamSettings": {
             "network": "xhttp", "security": "tls",
             "xhttpSettings": {"path": "/vless-xhttp", "mode": "packet-up"},
-            "tlsSettings": {"certificates": [{"certificateFile": "/usr/local/etc/xray/cf.crt", "keyFile": "/usr/local/etc/xray/cf.key"}], "alpn": ["h2", "http/1.1"]},
+            "tlsSettings": {"serverName": cf_domain, "certificates": [{"certificateFile": "/usr/local/etc/xray/cf.crt", "keyFile": "/usr/local/etc/xray/cf.key"}], "alpn": ["h2", "http/1.1"]},
             "sockopt": {"trustedXForwardedFor": ["CF-Connecting-IP", "X-Forwarded-For"], "tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20},
         },
         "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
@@ -1040,7 +1075,7 @@ ExecStop=/usr/sbin/nft delete table inet res_guard
 [Install]
 WantedBy=multi-user.target
 EOF
-            systemctl daemon-reload && systemctl enable res-guard.service >/dev/null 2>&1 || true
+            systemctl daemon-reload && systemctl enable --now res-guard.service >/dev/null 2>&1 || true
             echo "  [OK] 家宽端口 ${LISTEN_PORT} 白名单已生效并配置开机自启 (res-guard.service)"
         else
             echo "  [警告] nftables 家宽白名单加载失败！请检查内核 nftables 支持！" >&2
@@ -1048,6 +1083,11 @@ EOF
     else
         echo "  [警告] 白名单 IP (${RES_WHITELIST_IP}) 含非法地址，已跳过防火墙白名单以免断联！" >&2
     fi
+elif [ "$MODE" = "1" ] && [ "$SUBMODE" = "3" ]; then
+    systemctl disable --now res-guard.service >/dev/null 2>&1 || true
+    nft delete table inet res_guard >/dev/null 2>&1 || true
+    rm -f /etc/nftables.d/res-whitelist.nft /etc/systemd/system/res-guard.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
 fi
 
 systemctl enable --now xray
