@@ -33,6 +33,23 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 
 ---
 
+## 避坑对照：为什么不建议照搬网上「野生教程 / 模板」？
+
+网上不少拼凑教程把官方文档示例改两行就当“极简生产方案”发出来，新手照抄往往当天就被蹭流量、爆内存甚至封机。下面列出最常见的 8 个致命硬伤，以及本手册对应的生产级做法：
+
+| 常见野生教程踩坑点 | 实际后果 | 本手册生产级做法 |
+| :--- | :--- | :--- |
+| **1. 公开配置写死 UUID 与 REALITY 私钥** | 照抄启动后沦为全网开放代理，持私钥者还可伪造服务端做中间人攻击，蹭流量/发垃圾邮件直接封机 | 每次部署由内核现场随机生成独立 UUID、shortId 与 X25519 密钥对，绝不复用模板凭证 |
+| **2. 512M/1G 小内存硬塞 Docker 跑单进程代理** | Docker 引擎本身仍由 `systemd` 守护，平白多吃上百 MB 内存，小鸡高并发极易 OOM 强杀代理进程 | 原生 `systemd` 直跑（含崩溃无限自愈与 `OOMScoreAdjust=-500`），轻量化需求另提供约 20MB 内存的 [sing-box 无面板版](https://github.com/CatEacc/vps-singbox-runbook) |
+| **3. 镜像或脚本写死 `x86_64` 架构** | 在甲骨文（Oracle Cloud）等 ARM64 机器上直接报 `exec format error` 启动崩溃 | 自动探测 `uname -m`，原生兼容 `amd64` 与 `arm64` 双架构 |
+| **4. REALITY SNI 乱偷 `www.icloud.com` 等大厂站** | 国内存在云上贵州/境内 CDN 或路由重定向，或误偷 Cloudflare 站点沦为免费优选反代肉鸡 | 内置 **9 大地区纯本土 X25519 SNI 自动测速 + 选中后四重复检**（`TLS 1.3 + H2` / 非 CF / 无国内 CDN / 大陆可达） |
+| **5. 声称「CN2 GIA 等好线路不用开 BBR」** | 跨洋高延迟大带宽（高 BDP）下，默认 Cubic 遇轻微抖动即腰斩窗口，单流吞吐远跑不满 | 强制 `fq + bbr` + 关闭空闲慢启动 + 按物理内存三档自适应读写缓冲区 |
+| **6. 出站裸跑 `freedom`，无路由与端口防护** | 可被利用访问云内网元数据 `169.254.169.254`、挂 BT 吃 DMCA 版权封号、滥发垃圾邮件拖黑 IP | 默认置顶封禁 `geoip:private`、`bittorrent`、`geoip:cn`，并从主机层与代理层双保险封禁出站 `TCP 25`（SMTP） |
+| **7. 生产环境常开 `debug` 日志且不轮转** | 几天写爆小硬盘，且明文留存所有访问隐私记录 | 关闭无轮转 `access.log`，锁定 `warning` 级别，配合 `logrotate` 与 `journald 50M` 强收敛 |
+| **8. 客户端规则只写一条 `MATCH,PROXY`** | 国内 App 与网页流量全绕海外，白烧高价优化线路流量，还会撞上服务端防回国规则导致断网 | 提供完整国内外分流、防 DNS 泄露及家宽链式出口客户端规范（见 [vps-clash-runbook](https://github.com/CatEacc/vps-clash-runbook)） |
+
+---
+
 ## 阶段零：顶层架构决策 —— 机房机器（DC） vs 家宽机器（Residential）
 
 在动手部署前，建议先明确机器属于**机房商业 VPS** 还是**原生住宅家宽 VPS**，二者的网络环境与 ISP 策略差异很大。
