@@ -17,21 +17,39 @@ jobs:
       - name: Bash syntax check (bash -n)
         run: |
           bash -n setup.sh
-          echo "setup.sh syntax OK"
+          bash -n pure.sh
+          echo "setup.sh and pure.sh syntax OK"
 
       - name: ShellCheck error-level audit
         run: |
-          shellcheck -S error setup.sh
+          shellcheck -S error setup.sh pure.sh
           echo "ShellCheck error-level audit OK"
 
       - name: Verify embedded Python blocks compile
         run: |
           python3 - << 'PY'
           import re, ast
-          src = open("setup.sh", encoding="utf-8").read()
-          blocks = re.findall(r"python3\s+-\s*<<\s*'([A-Z0-9_]+)'\n(.*?)\n\1\b", src, re.S)
-          print(f"Found {len(blocks)} embedded Python blocks")
-          for idx, (tag, code) in enumerate(blocks, 1):
-              ast.parse(code)
-              print(f"  Block #{idx} ({tag}): syntax OK")
+          for path in ("setup.sh", "pure.sh"):
+              src = open(path, encoding="utf-8").read()
+              blocks = re.findall(r"python3\s+-\s*<<\s*'([A-Z0-9_]+)'\n(.*?)\n\1\b", src, re.S)
+              print(f"{path}: Found {len(blocks)} embedded Python blocks")
+              for idx, (tag, code) in enumerate(blocks, 1):
+                  ast.parse(code)
+                  print(f"  Block #{idx} ({tag}): syntax OK")
+          PY
+
+      - name: Validate config.example.json with official Xray-core v26.11.9
+        run: |
+          curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-64.zip"
+          python3 -m zipfile -e /tmp/xray.zip /tmp/xray-ci/
+          chmod +x /tmp/xray-ci/xray
+          python3 - << 'PY'
+          import json, subprocess
+          c = json.load(open("config.example.json", encoding="utf-8"))
+          out = subprocess.check_output(["/tmp/xray-ci/xray", "x25519"], text=True)
+          priv = [l.split(":", 1)[1].strip() for l in out.splitlines() if "Private" in l][0]
+          c["inbounds"][0]["streamSettings"]["realitySettings"]["privateKey"] = priv
+          open("/tmp/test_cfg.json", "w", encoding="utf-8").write(json.dumps(c))
+          subprocess.check_call(["/tmp/xray-ci/xray", "run", "-test", "-config", "/tmp/test_cfg.json"])
+          print("config.example.json passed Xray-core v26.11.9 run -test")
           PY
