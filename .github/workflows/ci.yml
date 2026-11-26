@@ -31,7 +31,7 @@ jobs:
           import re, ast
           for path in ("setup.sh", "pure.sh"):
               src = open(path, encoding="utf-8").read()
-              blocks = re.findall(r"python3\s+-\s*<<\s*'([A-Z0-9_]+)'\n(.*?)\n\1\b", src, re.S)
+              blocks = re.findall(r"python3\s+-\s*<<\s*'([A-Z0-9_]+)'[^\n]*\n(.*?)\n\1\b", src, re.S)
               print(f"{path}: Found {len(blocks)} embedded Python blocks")
               for idx, (tag, code) in enumerate(blocks, 1):
                   ast.parse(code)
