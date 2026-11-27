@@ -827,9 +827,12 @@ if os.path.exists(db_path):
                 found += 1
 
     kv = dict(c.execute("SELECT key, value FROM settings WHERE key IN ('webPort','webBasePath','webListen','webCertFile')").fetchall())
+    u_row = c.execute("SELECT username FROM users LIMIT 1").fetchone()
+    panel_user = u_row[0].strip() if (u_row and u_row[0]) else "admin"
     conn.close()
 else:
     kv = {}
+    panel_user = "admin"
 
 if os.path.exists('/etc/hysteria/config.yaml'):
     hy_port = '8443'
@@ -877,8 +880,10 @@ if kv:
     print(f"  {D}（提示：输入 VPS root 密码时屏幕不显示字符属正常，输完回车；登录成功后黑框窗口【不要关闭】！）{N}")
     print(f"  {W}第 2 步：{N}用自己电脑浏览器打开下方本地地址：")
     print(f"  {C}{scheme}://127.0.0.1:{wport}{wbase}{N}")
+    print(f"  {W}面板账号：{N}{C}{panel_user}{N}  {D}（密码采用 bcrypt 单向加密存库，无法反查明文）{N}")
     print(f"  {W}第 3 步：{N}浏览器若提示“不是私密连接”，点{G}「高级」->「继续前往」{N}（本地自签证书正常现象）。")
-    print(f"  {D}（忘记面板账密时，可在 VPS 终端里直接输入 x-ui 查看或重置）{N}")
+    print(f"  {O}PS：忘记面板密码时，在 VPS 终端复制下面这行即可一键重设（把 你的新密码 换成自定义密码）：{N}")
+    print(f"  {G}/usr/local/x-ui/x-ui setting -username {panel_user} -password 你的新密码 && systemctl restart x-ui{N}")
 print("\033[1;33m==================================================================\033[0m")
 EXPPY
         exit 0
@@ -1327,8 +1332,12 @@ case "$ARCH" in
     *) echo "[错误] 暂不支持的 CPU 架构: ${ARCH}"; exit 1 ;;
 esac
 
+FRESH_XUI_PASS=""
 if [ ! -x /usr/local/x-ui/x-ui ]; then
-    printf "n\n" | bash <(curl -fsSL https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh) "$XUI_VERSION" || true
+    XUI_INST_OUT=$(printf "n\n" | bash <(curl -fsSL https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh) "$XUI_VERSION" 2>&1 || true)
+    printf "%s\n" "$XUI_INST_OUT"
+    FRESH_XUI_PASS=$(printf "%s\n" "$XUI_INST_OUT" | sed 's/\x1b\[[0-9;]*m//g' | awk -F':' '/Password:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' || true)
+    unset XUI_INST_OUT
 fi
 if [ ! -x /usr/local/x-ui/x-ui ]; then
     echo "[错误] 3x-ui 安装失败，未检测到 /usr/local/x-ui/x-ui！"
@@ -1974,6 +1983,8 @@ PANEL_PORT=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').
 PANEL_PORT="${PANEL_PORT:-54321}"
 PANEL_PATH=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webBasePath' LIMIT 1\").fetchone(); print(r[0].strip().strip('/') if r and r[0] else '')" 2>/dev/null || true)
 PANEL_SCHEME=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT value FROM settings WHERE key='webCertFile' LIMIT 1\").fetchone(); print('https' if r and r[0] and r[0].strip() else 'http')" 2>/dev/null || echo "http")
+PANEL_USER=$(python3 -c "import sqlite3; r=sqlite3.connect('/etc/x-ui/x-ui.db').execute(\"SELECT username FROM users LIMIT 1\").fetchone(); print(r[0].strip() if r and r[0] else 'admin')" 2>/dev/null || echo "admin")
+PANEL_USER="${PANEL_USER:-admin}"
 SSH_PORT_NOW=$( (sshd -T 2>/dev/null || true) | awk '$1=="port"{print $2; exit}' )
 SSH_PORT_NOW="${SSH_PORT_NOW:-22}"
 SSH_P_FLAG=""
@@ -1993,8 +2004,17 @@ printf "  ${GREEN}ssh %s-L %s:127.0.0.1:%s root@%s${R}\n\n" "${SSH_P_FLAG}" "${P
 printf "  ${DIM}（提示：输入 VPS root 密码时屏幕不显示字符属正常，输完回车；登录成功后黑框窗口【不要关闭】！）${R}\n"
 printf "  ${WHITE}第 2 步：${R}打开自己电脑浏览器访问下方本地地址：\n"
 printf "  ${CYAN}%s://127.0.0.1:%s/%s${R}\n" "${PANEL_SCHEME}" "${PANEL_PORT}" "${PANEL_PATH}"
+if [ -n "${FRESH_XUI_PASS:-}" ]; then
+    printf "  ${WHITE}面板账号：${R}${CYAN}%s${R}    ${WHITE}初始密码：${R}${GREEN}%s${R}\n" "${PANEL_USER}" "${FRESH_XUI_PASS}"
+    printf "  ${ORANGE}PS：请立刻截图或复制上方【面板账号、初始密码、SSH 隧道命令与本地地址】到备忘录保存！${R}\n"
+    printf "  ${ORANGE}    3x-ui 密码采用不可逆加密存库，窗口关闭后无法再次查回明文！${R}\n"
+    unset FRESH_XUI_PASS
+else
+    printf "  ${WHITE}面板账号：${R}${CYAN}%s${R}  ${DIM}（沿用原面板密码；密码不可逆加密存库，无法反查明文）${R}\n" "${PANEL_USER}"
+    printf "  ${ORANGE}PS：请将上方【SSH 隧道命令与本地网址】保存到备忘录；日后随时可跑模式 [6] 只读复查。${R}\n"
+fi
 printf "  ${WHITE}第 3 步：${R}浏览器若提示“不是私密连接”，点${GREEN}「高级」->「继续前往」${R}（本地自签证书正常现象）。\n"
-printf "  ${DIM}（忘记面板账密时，可在 VPS 终端里直接输入 x-ui 查看或重置）${R}\n"
+printf "  ${DIM}（忘记密码时，在 VPS 终端运行一键重设：/usr/local/x-ui/x-ui setting -username %s -password 你的新密码 && systemctl restart x-ui）${R}\n" "${PANEL_USER}"
 if [ -f /tmp/setup_result.txt ]; then
     if grep -q "^REUSED_EXISTING=1" /tmp/setup_result.txt; then
         printf "${DIM}------------------------------------------------------------------${R}\n"
