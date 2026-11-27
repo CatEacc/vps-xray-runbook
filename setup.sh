@@ -1418,7 +1418,7 @@ fi
 install -m 600 /dev/null /tmp/setup_result.txt
 XRAY_BUF=$([ "${MEM_MB:-1000}" -le 700 ] && echo 32 || echo 64) \
 MODE="$MODE" REALITY_SUBMODE="$REALITY_SUBMODE" LISTEN_PORT="$LISTEN_PORT" \
-REALITY_SNI="$REALITY_SNI" CF_DOMAIN="$CF_DOMAIN" SERVER_IP="$SERVER_IP" \
+REALITY_SNI="$REALITY_SNI" CF_DOMAIN="$CF_DOMAIN" CF_OPT_HOST="${CF_OPT_HOST:-}" SERVER_IP="$SERVER_IP" \
 ENABLE_RELAY="$ENABLE_RELAY" RES_IP="$RES_IP" RES_PORT="$RES_PORT" RES_SS_PASS="$RES_SS_PASS" \
 XRAY_BIN="$XRAY_BIN" \
 python3 - << 'PYEOF' > /tmp/setup_result.txt
@@ -1430,6 +1430,7 @@ submode = os.environ['REALITY_SUBMODE']
 port = int(os.environ['LISTEN_PORT'] or '443')
 sni = os.environ['REALITY_SNI']
 cf_domain = os.environ['CF_DOMAIN']
+cf_opt_host = os.environ.get('CF_OPT_HOST', '').strip().strip('[]')
 server_ip = os.environ['SERVER_IP']
 enable_relay = os.environ['ENABLE_RELAY'].lower() == 'y'
 res_ip = os.environ['RES_IP'].strip()
@@ -1632,8 +1633,10 @@ elif mode == '1':
         "decryption": "none", "fallbacks": []
     }
     # 显式指定 minClientVer: "1.0.0"，防止 Xray v26.7.11+ 空值默认 >=26.3.27 拒连 Clash/sing-box/旧版小火箭
+    # 自动写入公网 IP 至 externalProxy，避免走 127.0.0.1 SSH 隧道开面板时二维码/链接变成 localhost
+    ext_proxy = [{"forceTls": "same", "dest": server_ip, "port": port, "remark": ""}] if (server_ip and server_ip != "YOUR_SERVER_IP") else []
     stream_obj = {
-        "network": net, "security": "reality", "externalProxy": [],
+        "network": net, "security": "reality", "externalProxy": ext_proxy,
         "realitySettings": {
             "show": False, "xver": 0, "target": f"{sni}:443", "serverNames": [sni],
             "privateKey": priv, "minClientVer": "1.0.0", "maxClientVer": "", "maxTimeDiff": 0,
@@ -1665,8 +1668,11 @@ elif mode == '2':
         "clients": [{"id": u, "flow": "", "email": email, "limitIp": 0, "totalGB": 0, "expiryTime": 0, "enable": True, "subId": sub_id, "reset": 0}],
         "decryption": "none", "fallbacks": []
     }
+    # 自动写入优选域名（或 CF 域名）至 externalProxy，避免走 SSH 隧道开面板时二维码变成 localhost 或暴露源站 IP
+    cf_ext_dest = cf_opt_host or cf_domain
+    cf_ext_proxy = [{"forceTls": "same", "dest": cf_ext_dest, "port": port, "remark": ""}] if cf_ext_dest else []
     stream_obj = {
-        "network": "xhttp", "security": "tls", "externalProxy": [],
+        "network": "xhttp", "security": "tls", "externalProxy": cf_ext_proxy,
         "tlsSettings": {
             "serverName": cf_domain, "minVersion": "1.2", "maxVersion": "1.3",
             "certificates": [{"certificateFile": "/etc/x-ui/cf.crt", "keyFile": "/etc/x-ui/cf.key", "ocspStapling": 0}],
