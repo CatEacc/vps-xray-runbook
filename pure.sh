@@ -434,10 +434,59 @@ readonly_sni_menu() {
     exit 0
 }
 
+NODE_PREFIX=""
+CLIENT_COUNT="1"
+CLIENT_REMARKS=""
+RES_PROTO="ss"
+RES_USER=""
+
+prompt_multi_clients() {
+    local def_prefix="$1"
+    printf "\n  ${CYAN}─── 节点命名与同端口批量添加客户（直接回车默认单用户） ───${R}\n"
+    read -rp "$(printf "  ${YELLOW}请输入节点前缀名（如 att-vless-reality，回车默认 %s）: ${R}" "$def_prefix")" NODE_PREFIX
+    NODE_PREFIX=$(printf "%s" "${NODE_PREFIX:-$def_prefix}" | tr -d '\r\n' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+    [ -z "$NODE_PREFIX" ] && NODE_PREFIX="$def_prefix"
+
+    read -rp "$(printf "  ${YELLOW}本次在该端口添加几个客户？[1-50] (回车默认 1): ${R}")" CLIENT_COUNT
+    if [[ ! "${CLIENT_COUNT:-1}" =~ ^[0-9]+$ ]] || [ "${CLIENT_COUNT:-1}" -lt 1 ] || [ "${CLIENT_COUNT:-1}" -gt 50 ]; then
+        CLIENT_COUNT="1"
+    fi
+
+    if [ "$CLIENT_COUNT" -eq 1 ]; then
+        read -rp "$(printf "  ${YELLOW}请输入客户备注名（如 自用，留空回车自动生成随机 8 位英文名）: ${R}")" CLIENT_REMARKS
+    else
+        read -rp "$(printf "  ${YELLOW}请输入 %s 个客户备注名（英文逗号分隔，如 自用,朋友A；留空或不足自动补随机英文）: ${R}" "$CLIENT_COUNT")" CLIENT_REMARKS
+    fi
+    CLIENT_REMARKS=$(printf "%s" "${CLIENT_REMARKS:-}" | tr -d '\r\n')
+}
+
 prompt_relay_ss() {
-    read -rp "是否一键中转至海外住宅家宽 (Shadowsocks-2022 落地)? [y/N]: " ENABLE_RELAY
+    RES_PROTO="ss"
+    RES_USER=""
+    read -rp "是否给这批新客户绑定后端家宽 / 住宅代理落地？[y/N]: " ENABLE_RELAY
     ENABLE_RELAY="${ENABLE_RELAY:-n}"
     if [[ "$ENABLE_RELAY" =~ ^[Yy]$ ]]; then
+        printf "  ${GREEN}[1]${R} 自建家宽 SS-2022（粘贴 ss:// 或 IP）  ${GREEN}[2]${R} 第三方静态住宅代理（SOCKS5 / HTTP）\n"
+        read -rp "请选择对接方式 [1-2] (回车默认 1): " _rm
+        if [ "${_rm:-1}" = "2" ]; then
+            printf "  ${GREEN}[1]${R} SOCKS5  ${GREEN}[2]${R} HTTP\n"
+            read -rp "请选择住宅代理协议 [1-2] (回车默认 1 SOCKS5): " _pt
+            [ "${_pt:-1}" = "2" ] && RES_PROTO="http" || RES_PROTO="socks"
+            read -rp "请输入住宅代理 IP 或域名: " RES_IP
+            RES_IP=$(printf "%s" "$RES_IP" | tr -d '[:space:]')
+            read -rp "请输入住宅代理端口: " RES_PORT
+            RES_PORT=$(validate_port "${RES_PORT:-1080}" 1080)
+            read -rp "请输入住宅代理用户名（无认证直接回车）: " RES_USER
+            RES_USER=$(printf "%s" "$RES_USER" | tr -d '\r\n')
+            if [ -n "$RES_USER" ]; then
+                read -rp "请输入住宅代理密码: " RES_SS_PASS
+                RES_SS_PASS=$(printf "%s" "$RES_SS_PASS" | tr -d '\r\n')
+            else
+                RES_SS_PASS=""
+            fi
+            echo "  [已配置] 第三方住宅出站: ${RES_PROTO}://${RES_IP}:${RES_PORT}"
+            return 0
+        fi
         read -rp "请粘贴家宽 ss:// 链接（或直接输入家宽 IPv4）: " RES_INPUT
         if [[ "$RES_INPUT" == ss://* ]] && command -v python3 >/dev/null 2>&1; then
             local parsed
@@ -545,6 +594,9 @@ case "$MODE" in
             esac
             read -rp "是否开启 RPRX 最新抗量子 REALITY 签名 (mldsa65，需新版 v2rayN/v2rayNG)? [y/N]: " ENABLE_MLDSA65
             ENABLE_MLDSA65="${ENABLE_MLDSA65:-n}"
+            _def_pre="VLESS-Vision-REALITY"
+            [ "$SUBMODE" = "1" ] && _def_pre="VLESS-XHTTP-REALITY"
+            prompt_multi_clients "$_def_pre"
             prompt_relay_ss
         fi
         ;;
@@ -591,6 +643,7 @@ case "$MODE" in
             *) CF_OPT_HOST="www.visa.com.hk" ;;
         esac
         printf "  ${GREEN}-> 已选定 CF 优选入口:${R} ${WHITE}%s${R} ${DIM}(Host/SNI 保持 %s 不变)${R}\n" "$CF_OPT_HOST" "$CF_DOMAIN"
+        prompt_multi_clients "CF-VLESS-XHTTP-TLS"
         prompt_relay_ss
         ;;
     3)
@@ -1037,9 +1090,10 @@ fi
 install -m 600 /dev/null /tmp/pure_result.txt
 MODE="$MODE" SUBMODE="$SUBMODE" LISTEN_PORT="$LISTEN_PORT" REALITY_SNI="$REALITY_SNI" \
 ENABLE_MLDSA65="$ENABLE_MLDSA65" CF_DOMAIN="$CF_DOMAIN" ENABLE_RELAY="$ENABLE_RELAY" \
-RES_IP="$RES_IP" RES_PORT="$RES_PORT" RES_SS_PASS="$RES_SS_PASS" XRAY_BUF="$XRAY_BUF" \
+RES_PROTO="${RES_PROTO:-ss}" RES_IP="$RES_IP" RES_PORT="$RES_PORT" RES_USER="${RES_USER:-}" RES_SS_PASS="$RES_SS_PASS" XRAY_BUF="$XRAY_BUF" \
+NODE_PREFIX="${NODE_PREFIX:-}" CLIENT_COUNT="${CLIENT_COUNT:-1}" CLIENT_REMARKS="${CLIENT_REMARKS:-}" \
 SERVER_IP="$SERVER_IP" XRAY_BIN="$XRAY_BIN" XRAY_CFG="$XRAY_CFG" python3 - << 'GENPY' > /tmp/pure_result.txt
-import os, json, uuid, secrets, subprocess, urllib.parse, base64
+import os, json, uuid, secrets, subprocess, urllib.parse, base64, re
 os.umask(0o077)
 
 mode = os.environ["MODE"]
@@ -1049,9 +1103,17 @@ sni = os.environ["REALITY_SNI"]
 use_pq = os.environ.get("ENABLE_MLDSA65", "n").lower() == "y"
 cf_domain = os.environ["CF_DOMAIN"]
 relay_on = os.environ.get("ENABLE_RELAY", "n").lower() == "y"
+res_proto = (os.environ.get("RES_PROTO") or "ss").strip().lower()
 res_ip = os.environ["RES_IP"].strip()
 res_port = os.environ["RES_PORT"].strip()
+res_user = os.environ.get("RES_USER", "").strip()
 res_pass = os.environ["RES_SS_PASS"].strip()
+node_prefix = os.environ.get("NODE_PREFIX", "").strip()
+try:
+    client_count = max(1, min(50, int(os.environ.get("CLIENT_COUNT", "1") or "1")))
+except Exception:
+    client_count = 1
+client_remarks_raw = os.environ.get("CLIENT_REMARKS", "").strip()
 buf_kb = int(os.environ.get("XRAY_BUF", "64"))
 server_ip = os.environ["SERVER_IP"]
 uri_ip = f"[{server_ip}]" if ":" in server_ip and not server_ip.startswith("[") else server_ip
@@ -1069,11 +1131,26 @@ cfg["policy"] = {
     }
 }
 
-removed_tags = {x.get("tag") for x in cfg.get("inbounds", []) if x.get("port") == port and x.get("tag")}
-for rt in removed_tags:
-    meta.pop(rt, None)
+existing_same_port = [x for x in cfg.get("inbounds", []) if x.get("port") == port]
+reused_inb = None
+if existing_same_port and mode in ("1", "2") and not (mode == "1" and submode == "3"):
+    cand = existing_same_port[0]
+    st_ex = cand.get("streamSettings", {})
+    want_sec = "reality" if mode == "1" else "tls"
+    want_net = ("xhttp" if submode == "1" else "raw") if mode == "1" else "xhttp"
+    ex_net = "raw" if st_ex.get("network", "raw") in ("tcp", "raw") else st_ex.get("network")
+    if cand.get("protocol") == "vless" and st_ex.get("security") == want_sec and ex_net == want_net:
+        reused_inb = cand
 
-inbounds = [x for x in cfg.get("inbounds", []) if x.get("port") != port]
+removed_tags = set()
+if reused_inb is None:
+    removed_tags = {x.get("tag") for x in existing_same_port if x.get("tag")}
+    for rt in removed_tags:
+        meta.pop(rt, None)
+    inbounds = [x for x in cfg.get("inbounds", []) if x.get("port") != port]
+else:
+    inbounds = list(cfg.get("inbounds", []))
+
 outbounds = [x for x in cfg.get("outbounds", []) if x.get("tag") not in ("direct", "blocked")]
 outbounds = [
     {"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "UseIPv4"}},
@@ -1093,7 +1170,28 @@ for r in old_rules:
         continue
     custom_rules.append(r)
 
+def rand_suf(n=8):
+    return "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(n))
+
+def make_batch_clients(prefix, flow_val, existing_emails):
+    parts = [p.strip() for p in re.split(r"[,，]+", client_remarks_raw) if p.strip()] if client_remarks_raw else []
+    res = []
+    used = set(existing_emails)
+    for i in range(client_count):
+        suf = parts[i] if i < len(parts) else rand_suf(8)
+        em = f"{prefix}-{suf}" if prefix else suf
+        while em in used:
+            em = f"{em}-{rand_suf(4)}"
+        used.add(em)
+        cobj = {"id": str(uuid.uuid4()), "email": em}
+        if flow_val:
+            cobj["flow"] = flow_val
+        res.append(cobj)
+    return res
+
 share_link = ""
+share_items = []
+new_client_emails = []
 tag = f"in-{port}"
 
 if mode == "1" and submode == "3":
@@ -1111,88 +1209,132 @@ if mode == "1" and submode == "3":
     print(f"SS_PORT={port}")
     print(f"SS_PASS={ss_pass}")
 elif mode == "1":
-    uid = str(uuid.uuid4())
-    sid = secrets.token_hex(4)
-    out = subprocess.check_output([xray_bin, "x25519"], text=True)
-    priv = pub = ""
-    for line in out.splitlines():
-        if "Private" in line: priv = line.split(":", 1)[1].strip()
-        elif "Public" in line or "Password" in line: pub = line.split(":", 1)[1].strip()
-    pq_seed = pq_verify = ""
-    if use_pq:
-        try:
-            pq_out = subprocess.check_output([xray_bin, "mldsa65"], text=True, stderr=subprocess.DEVNULL)
-            for line in pq_out.splitlines():
-                if "Seed" in line: pq_seed = line.split(":", 1)[1].strip()
-                elif "Verify" in line: pq_verify = line.split(":", 1)[1].strip()
-        except Exception:
-            pass
     is_xhttp = (submode == "1")
-    tag = f"vless-{'xhttp' if is_xhttp else 'vision'}-reality-{port}"
-    reality_cfg = {
-        "show": False, "target": f"{sni}:443", "xver": 0, "serverNames": [sni],
-        "privateKey": priv, "minClientVer": "1.0.0", "shortIds": [sid],
-    }
-    if pq_seed:
-        reality_cfg["mldsa65Seed"] = pq_seed
-    st = {
-        "network": "xhttp" if is_xhttp else "raw",
-        "security": "reality",
-        "realitySettings": reality_cfg,
-        "sockopt": {"tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20},
-    }
-    if is_xhttp:
-        st["xhttpSettings"] = {"path": "/vless-xhttp", "mode": "auto"}
-    client_obj = {"id": uid, "email": f"user-{port}"}
-    if not is_xhttp:
-        client_obj["flow"] = "xtls-rprx-vision"
-    inbounds.append({
-        "tag": tag, "listen": "::", "port": port, "protocol": "vless",
-        "settings": {"clients": [client_obj], "decryption": "none"},
-        "streamSettings": st,
-        "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
-    })
-    meta[tag] = {"pbk": pub, "pqv": pq_verify}
+    flow_val = "" if is_xhttp else "xtls-rprx-vision"
+    def_pre = "VLESS-XHTTP-REALITY" if is_xhttp else "VLESS-Vision-REALITY"
+    pre = node_prefix or def_pre
+    if reused_inb is not None:
+        tag = reused_inb["tag"]
+        ex_ems = {c.get("email", "") for c in reused_inb.get("settings", {}).get("clients", [])}
+        batch = make_batch_clients(pre, flow_val, ex_ems)
+        reused_inb["settings"].setdefault("clients", []).extend(batch)
+        st = reused_inb.get("streamSettings", {})
+        rs = st.get("realitySettings", {})
+        sni = (rs.get("serverNames") or [sni])[0]
+        sid = (rs.get("shortIds") or [""])[0]
+        pub = meta.get(tag, {}).get("pbk", "")
+        pq_verify = meta.get(tag, {}).get("pqv", "")
+        print("REUSED_EXISTING=1")
+    else:
+        sid = secrets.token_hex(4)
+        out = subprocess.check_output([xray_bin, "x25519"], text=True)
+        priv = pub = ""
+        for line in out.splitlines():
+            if "Private" in line: priv = line.split(":", 1)[1].strip()
+            elif "Public" in line or "Password" in line: pub = line.split(":", 1)[1].strip()
+        pq_seed = pq_verify = ""
+        if use_pq:
+            try:
+                pq_out = subprocess.check_output([xray_bin, "mldsa65"], text=True, stderr=subprocess.DEVNULL)
+                for line in pq_out.splitlines():
+                    if "Seed" in line: pq_seed = line.split(":", 1)[1].strip()
+                    elif "Verify" in line: pq_verify = line.split(":", 1)[1].strip()
+            except Exception:
+                pass
+        tag = f"vless-{'xhttp' if is_xhttp else 'vision'}-reality-{port}"
+        batch = make_batch_clients(pre, flow_val, set())
+        reality_cfg = {
+            "show": False, "target": f"{sni}:443", "xver": 0, "serverNames": [sni],
+            "privateKey": priv, "minClientVer": "1.0.0", "shortIds": [sid],
+        }
+        if pq_seed:
+            reality_cfg["mldsa65Seed"] = pq_seed
+        st = {
+            "network": "xhttp" if is_xhttp else "raw",
+            "security": "reality",
+            "realitySettings": reality_cfg,
+            "sockopt": {"tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20},
+        }
+        if is_xhttp:
+            st["xhttpSettings"] = {"path": "/vless-xhttp", "mode": "auto"}
+        inbounds.append({
+            "tag": tag, "listen": "::", "port": port, "protocol": "vless",
+            "settings": {"clients": batch, "decryption": "none"},
+            "streamSettings": st,
+            "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
+        })
+        meta[tag] = {"pbk": pub, "pqv": pq_verify}
+    new_client_emails = [c["email"] for c in batch]
     q = [f"type={'xhttp' if is_xhttp else 'tcp'}", "encryption=none", "security=reality", f"pbk={pub}", "fp=chrome", f"sni={sni}", f"sid={sid}", "spx=%2F"]
     if is_xhttp: q += ["path=%2Fvless-xhttp", "mode=auto"]
     else: q.append("flow=xtls-rprx-vision")
     if pq_verify: q.append(f"pqv={urllib.parse.quote(pq_verify, safe='')}")
-    share_link = f"vless://{uid}@{uri_ip}:{port}?{'&'.join(q)}#{urllib.parse.quote(tag)}"
+    for c in batch:
+        lnk = f"vless://{c['id']}@{uri_ip}:{port}?{'&'.join(q)}#{urllib.parse.quote(c['email'])}"
+        share_items.append((c["email"], lnk))
+    share_link = share_items[0][1] if len(share_items) == 1 else ""
     print("RESULT_TYPE=LINK")
 elif mode == "2":
-    uid = str(uuid.uuid4())
-    tag = f"vless-cf-xhttp-{port}"
-    inbounds.append({
-        "tag": tag, "listen": "::", "port": port, "protocol": "vless",
-        "settings": {"clients": [{"id": uid, "email": f"cf-{port}"}], "decryption": "none"},
-        "streamSettings": {
-            "network": "xhttp", "security": "tls",
-            "xhttpSettings": {"path": "/vless-xhttp", "mode": "packet-up"},
-            "tlsSettings": {"serverName": cf_domain, "certificates": [{"certificateFile": "/usr/local/etc/xray/cf.crt", "keyFile": "/usr/local/etc/xray/cf.key"}], "alpn": ["h2", "http/1.1"]},
-            "sockopt": {"trustedXForwardedFor": ["CF-Connecting-IP", "X-Forwarded-For"], "tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20},
-        },
-        "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
-    })
-    meta[tag] = {"host": cf_domain}
-    share_link = f"vless://{uid}@{cf_domain}:{port}?type=xhttp&path=%2Fvless-xhttp&mode=packet-up&encryption=none&security=tls&sni={cf_domain}&host={cf_domain}&alpn=h2&fp=chrome#{urllib.parse.quote(tag)}"
+    pre = node_prefix or "CF-VLESS-XHTTP-TLS"
+    if reused_inb is not None:
+        tag = reused_inb["tag"]
+        ex_ems = {c.get("email", "") for c in reused_inb.get("settings", {}).get("clients", [])}
+        batch = make_batch_clients(pre, "", ex_ems)
+        reused_inb["settings"].setdefault("clients", []).extend(batch)
+        cf_domain = reused_inb.get("streamSettings", {}).get("tlsSettings", {}).get("serverName", cf_domain)
+        print("REUSED_EXISTING=1")
+    else:
+        tag = f"vless-cf-xhttp-{port}"
+        batch = make_batch_clients(pre, "", set())
+        inbounds.append({
+            "tag": tag, "listen": "::", "port": port, "protocol": "vless",
+            "settings": {"clients": batch, "decryption": "none"},
+            "streamSettings": {
+                "network": "xhttp", "security": "tls",
+                "xhttpSettings": {"path": "/vless-xhttp", "mode": "packet-up"},
+                "tlsSettings": {"serverName": cf_domain, "certificates": [{"certificateFile": "/usr/local/etc/xray/cf.crt", "keyFile": "/usr/local/etc/xray/cf.key"}], "alpn": ["h2", "http/1.1"]},
+                "sockopt": {"trustedXForwardedFor": ["CF-Connecting-IP", "X-Forwarded-For"], "tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20},
+            },
+            "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
+        })
+        meta[tag] = {"host": cf_domain}
+    new_client_emails = [c["email"] for c in batch]
+    for c in batch:
+        lnk = f"vless://{c['id']}@{cf_domain}:{port}?type=xhttp&path=%2Fvless-xhttp&mode=packet-up&encryption=none&security=tls&sni={cf_domain}&host={cf_domain}&alpn=h2&fp=chrome#{urllib.parse.quote(c['email'])}"
+        share_items.append((c["email"], lnk))
+    share_link = share_items[0][1] if len(share_items) == 1 else ""
     print("RESULT_TYPE=LINK")
 
-stale_in_tags = removed_tags | {tag}
-stale_ob_tags = {f"out-res-{t}" for t in stale_in_tags}
-outbounds = [x for x in outbounds if x.get("tag") not in stale_ob_tags]
-custom_rules = [
-    r for r in custom_rules
-    if not (set(r.get("inboundTag", [])) & stale_in_tags)
-    and r.get("outboundTag") not in stale_ob_tags
-]
+if reused_inb is None:
+    stale_in_tags = removed_tags | {tag}
+    stale_ob_tags = {f"out-res-{t}" for t in stale_in_tags}
+    outbounds = [x for x in outbounds if x.get("tag") not in stale_ob_tags]
+    custom_rules = [
+        r for r in custom_rules
+        if not (set(r.get("inboundTag", [])) & stale_in_tags)
+        and r.get("outboundTag") not in stale_ob_tags
+    ]
 
-if relay_on and res_ip and res_port and res_pass:
-    ob_tag = f"out-res-{tag}"
-    outbounds.append({
-        "tag": ob_tag, "protocol": "shadowsocks",
-        "settings": {"servers": [{"address": res_ip, "port": int(res_port), "method": "2022-blake3-aes-256-gcm", "password": res_pass}]},
-    })
-    custom_rules.append({"type": "field", "inboundTag": [tag], "outboundTag": ob_tag})
+relay_valid = relay_on and res_ip and res_port and (res_proto in ("socks", "http") or res_pass)
+if relay_valid:
+    if reused_inb is not None and new_client_emails:
+        ob_tag = f"out-res-u-{port}-{secrets.token_hex(2)}"
+    else:
+        ob_tag = f"out-res-{tag}"
+    if res_proto in ("socks", "http"):
+        srv = {"address": res_ip, "port": int(res_port)}
+        if res_user:
+            srv["users"] = [{"user": res_user, "pass": res_pass}]
+        outbounds.append({"tag": ob_tag, "protocol": res_proto, "settings": {"servers": [srv]}})
+    else:
+        outbounds.append({
+            "tag": ob_tag, "protocol": "shadowsocks",
+            "settings": {"servers": [{"address": res_ip, "port": int(res_port), "method": "2022-blake3-aes-256-gcm", "password": res_pass}]},
+        })
+    if reused_inb is not None and new_client_emails:
+        custom_rules.insert(0, {"type": "field", "user": new_client_emails, "outboundTag": ob_tag})
+    else:
+        custom_rules.append({"type": "field", "inboundTag": [tag], "outboundTag": ob_tag})
 
 valid_ob_tags = {x.get("tag") for x in outbounds if x.get("tag")}
 custom_rules = [r for r in custom_rules if not (str(r.get("outboundTag", "")).startswith("out-res-") and r.get("outboundTag") not in valid_ob_tags)]
@@ -1225,7 +1367,10 @@ os.replace(tmp_cfg, cfg_path)
 with open(meta_path, "w", encoding="utf-8") as f:
     json.dump(meta, f, indent=2, ensure_ascii=False)
 os.chmod(meta_path, 0o600)
-print("SHARE_LINK=" + share_link)
+for _em, _lnk in share_items:
+    print(f"SHARE_LINK_ITEM={_em}|{_lnk}")
+if share_link:
+    print("SHARE_LINK=" + share_link)
 GENPY
 
 if [ "$MODE" = "1" ] && [ "$SUBMODE" = "3" ] && [ -n "$RES_WHITELIST_IP" ] && command -v nft >/dev/null 2>&1; then
@@ -1320,21 +1465,38 @@ if [ -f /tmp/pure_result.txt ]; then
         echo "  【家宽落地 SS-2022 中转凭据】（请复制到前置优化机脚本中）："
         grep -E "^SS_(IP|PORT|PASS)=" /tmp/pure_result.txt | sed 's/^/  /'
         [ -n "$SHARE_URL" ] && echo "  分享链接: ${SHARE_URL}"
-    elif [ -n "$SHARE_URL" ]; then
+    elif grep -q "^SHARE_LINK_ITEM=" /tmp/pure_result.txt || [ -n "$SHARE_URL" ]; then
         echo "------------------------------------------------------------------"
-        printf "  ${GREEN}【客户端导入链接】${R}${DIM}（请先关掉客户端顶部总开关再测速！）：${R}\n"
-        printf "  ${WHITE}%s${R}\n" "${SHARE_URL}"
-        if command -v qrencode >/dev/null 2>&1; then
-            printf "  ${CYAN}【手机扫码导入（Shadowrocket / v2rayNG / Stash）】：${R}\n"
-            qrencode -t ANSIUTF8 -m 1 "$SHARE_URL" || true
-        fi
-        if [ "$MODE" = "2" ]; then
-            CF_OPT_URL="$(printf '%s' "$SHARE_URL" | sed -E "s|@[^:]+:|@${CF_OPT_HOST}:|")-CF%E4%BC%98%E9%80%89"
-            printf "\n  ${YELLOW}【CF 优选加速链接（入口: %s，防国内默认免费段超时，直接扫这个更快更稳）】：${R}\n" "${CF_OPT_HOST}"
-            printf "  ${GREEN}%s${R}\n" "${CF_OPT_URL}"
-            if command -v qrencode >/dev/null 2>&1; then
-                qrencode -t ANSIUTF8 -m 1 "$CF_OPT_URL" || true
+        LINK_COUNT=$(grep -c "^SHARE_LINK_ITEM=" /tmp/pure_result.txt 2>/dev/null || echo 0)
+        if [ "$LINK_COUNT" -le 1 ]; then
+            [ -z "$SHARE_URL" ] && SHARE_URL=$(grep "^SHARE_LINK_ITEM=" /tmp/pure_result.txt | head -n 1 | cut -d'|' -f2- || true)
+            printf "  ${GREEN}【客户端导入链接】${R}${DIM}（请先关掉客户端顶部总开关再测速！）：${R}\n"
+            printf "  ${WHITE}%s${R}\n" "${SHARE_URL}"
+            if command -v qrencode >/dev/null 2>&1 && [ -n "$SHARE_URL" ]; then
+                printf "  ${CYAN}【手机扫码导入（Shadowrocket / v2rayNG / Stash）】：${R}\n"
+                qrencode -t ANSIUTF8 -m 1 "$SHARE_URL" || true
             fi
+            if [ "$MODE" = "2" ] && [ -n "$SHARE_URL" ]; then
+                CF_OPT_URL="$(printf '%s' "$SHARE_URL" | sed -E "s|@[^:]+:|@${CF_OPT_HOST}:|")-CF%E4%BC%98%E9%80%89"
+                printf "\n  ${YELLOW}【CF 优选加速链接（入口: %s，防国内默认免费段超时，直接扫这个更快更稳）】：${R}\n" "${CF_OPT_HOST}"
+                printf "  ${GREEN}%s${R}\n" "${CF_OPT_URL}"
+                if command -v qrencode >/dev/null 2>&1; then
+                    qrencode -t ANSIUTF8 -m 1 "$CF_OPT_URL" || true
+                fi
+            fi
+        else
+            printf "  ${GREEN}【本次批量生成 %s 个客户链接】${R}${DIM}（已自动追加至端口 %s，不覆盖原客户）：${R}\n" "${LINK_COUNT}" "${LISTEN_PORT}"
+            IDX_L=0
+            while IFS='|' read -r _em _url; do
+                _em="${_em#SHARE_LINK_ITEM=}"
+                [ -z "$_url" ] && continue
+                IDX_L=$((IDX_L + 1))
+                printf "  ${CYAN}[%d] %s${R}\n  ${WHITE}%s${R}\n" "$IDX_L" "$_em" "$_url"
+                if [ "$MODE" = "2" ]; then
+                    _opt_url="$(printf '%s' "$_url" | sed -E "s|@[^:]+:|@${CF_OPT_HOST}:|")-CF%E4%BC%98%E9%80%89"
+                    printf "  ${GREEN}[%d-CF优选] %s${R}\n" "$IDX_L" "$_opt_url"
+                fi
+            done < <(grep "^SHARE_LINK_ITEM=" /tmp/pure_result.txt)
         fi
     fi
     rm -f /tmp/pure_result.txt
