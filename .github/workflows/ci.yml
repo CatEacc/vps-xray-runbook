@@ -39,6 +39,11 @@ jobs:
                   print(f"  Block #{idx} ({tag}): syntax OK")
           PY
 
+      - name: Smoke-test read-only SNI check mode
+        run: |
+          sudo bash setup.sh sni www.gentoo.org
+          sudo bash pure.sh sni www.gentoo.org
+
       - name: Validate config.example.json with official Xray-core v26.11.9
         run: |
           curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-64.zip"
