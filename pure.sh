@@ -43,7 +43,7 @@ SERVER_IP=$(printf "%s" "$SERVER_IP" | tr -d '[:space:]')
 [[ "$SERVER_IP" =~ ^[0-9a-fA-F.:]+$ ]] || SERVER_IP="YOUR_SERVER_IP"
 
 SCRIPT_VER=$(curl -fsSm 2 https://api.github.com/repos/CatEacc/vps-xray-runbook/releases/latest 2>/dev/null | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n 1 | cut -d'"' -f4 || true)
-SCRIPT_VER="${SCRIPT_VER:-v1.2.5}"
+SCRIPT_VER="${SCRIPT_VER:-v1.2.6}"
 
 print_cateacc_logo() {
     local G1="${ESC}[38;5;46m" G2="${ESC}[38;5;82m" G3="${ESC}[38;5;154m" G4="${ESC}[38;5;226m"
@@ -90,6 +90,7 @@ clean_domain() {
 }
 
 MODE="${1:-}"
+SNI_QUERY_ARG="${2:-}"
 if [ -z "$MODE" ]; then
     clear 2>/dev/null || true
     printf '\n'
@@ -112,8 +113,9 @@ if [ -z "$MODE" ]; then
     printf "  ${GREEN}[3]${R} ${WHITE}纯系统底层内核调优模式${R} ${ORANGE}· 零代理内核${R}\n"
     printf "      ${DIM}BBR+FQ / 按内存分档缓冲 / 1GB Swap / MPTCP 防护 / 默认封 TCP 25 / Fail2ban${R}\n"
     printf "  ${GREEN}[4]${R} ${WHITE}一键导出所有节点链接 & 二维码${R} ${CYAN}· 只读${R}\n"
-    printf "  ${GREEN}[5]${R} ${WHITE}本机家宽 / 商宽 / 机房 IP 与环境快检${R} ${SKY}· 只读 · 不测流媒体${R}\n\n"
-    read -rp "$(printf "${YELLOW}  请输入方案编号 [1-5] (回车默认 1): ${R}")" MODE || MODE="1"
+    printf "  ${GREEN}[5]${R} ${WHITE}本机家宽 / 商宽 / 机房 IP 与环境快检${R} ${SKY}· 只读 · 不测流媒体${R}\n"
+    printf "  ${GREEN}[6]${R} ${WHITE}REALITY 优选 SNI 测速与域名四重体检${R} ${CYAN}· 只读 · 零改动筛域名${R}\n\n"
+    read -rp "$(printf "${YELLOW}  请输入方案编号 [1-6] (回车默认 1): ${R}")" MODE || MODE="1"
     MODE="${MODE:-1}"
 fi
 
@@ -202,9 +204,233 @@ except Exception as e:
 CHKPY
     ) || true
     case "$chk_out" in
-        OK\|*)   printf "  ${GREEN}[实时复检通过]${R} %s\n" "${chk_out#OK|}" ;;
-        WARN\|*) printf "  ${YELLOW}[实时复检警告]${R} %s\n" "${chk_out#WARN|}" ;;
+        OK\|*)   printf "  ${GREEN}[实时复检通过]${R} %s\n" "${chk_out#OK|}"; return 0 ;;
+        WARN\|*) printf "  ${YELLOW}[实时复检警告]${R} %s\n" "${chk_out#WARN|}"; return 1 ;;
     esac
+    return 1
+}
+
+SNI_ARR=()
+run_sni_speedtest_table() {
+    SNI_ARR=()
+    command -v python3 >/dev/null 2>&1 || return 1
+    local vps_cc sni_list idx tag f1 f2 f3
+    vps_cc=$( (curl -fsSm 2 https://ipinfo.io/country 2>/dev/null || curl -fsSm 2 https://ifconfig.co/country-iso 2>/dev/null || true) | tr -dc 'A-Za-z' | tr '[:lower:]' '[:upper:]' | head -c 2 )
+    echo ""
+    printf "  ${YELLOW}[说明]${R} ${DIM}REALITY 选站铁律：纯海外、TLSv1.3+H2、非 CF、无国内 CDN、国内直连可达，同地区低延迟更自然。${R}\n"
+    printf "  ${SKY}-> 正在并发测速当前地区 (${CYAN}${vps_cc:-GLOBAL}${SKY}) 本土站 + 全球通用兜底池...${R}\n"
+    sni_list=$(VPS_CC="$vps_cc" python3 - << 'SNIPY'
+import os, ssl, socket, time
+from concurrent.futures import ThreadPoolExecutor
+
+GLOBAL_POOL = [
+    ("www.gentoo.org",     "Gentoo Linux 官网"),
+    ("www.openssl.org",    "OpenSSL 加密库官网"),
+    ("www.debian.org",     "Debian Linux 官网"),
+    ("www.kernel.org",     "Linux 内核官网"),
+    ("addons.mozilla.org", "Firefox 扩展商店"),
+]
+REGIONAL = {
+    "US": ("美国", [
+        ("www.ebay.com",     "eBay 国际电商"),
+        ("www.airbnb.com",   "Airbnb 国际民宿"),
+        ("www.ups.com",      "UPS 国际物流"),
+        ("www.stanford.edu", "斯坦福大学官网"),
+        ("www.harvard.edu",  "哈佛大学官网"),
+    ]),
+    "CA": ("加拿大", [
+        ("www.utoronto.ca", "多伦多大学官网"),
+        ("www.ubc.ca",      "英属哥伦比亚大学"),
+        ("www.ebay.com",    "eBay 国际电商"),
+        ("www.airbnb.com",  "Airbnb 国际民宿"),
+        ("www.ups.com",     "UPS 国际物流"),
+    ]),
+    "JP": ("日本", [
+        ("www.sony.jp",           "索尼日本官网"),
+        ("www.yahoo.co.jp",       "日本雅虎门户"),
+        ("www.honda.co.jp",       "本田日本官网"),
+        ("www.yamaha.com",        "雅马哈国际官网"),
+        ("www.lovelive-anime.jp", "日本动漫官网"),
+    ]),
+    "HK": ("香港", [
+        ("www.mandarinoriental.com", "香港文华东方酒店"),
+        ("www.k11musea.com",         "香港 K11 MUSEA"),
+        ("www.pacificplace.com.hk",  "香港太古广场"),
+        ("www.cityu.edu.hk",         "香港城市大学"),
+        ("www.hku.hk",               "香港大学官网"),
+    ]),
+    "SG": ("新加坡", [
+        ("www.grab.com",          "Grab 东南亚出行"),
+        ("www.changiairport.com", "新加坡樟宜机场"),
+        ("www.nus.edu.sg",        "新加坡国立大学"),
+        ("www.smu.edu.sg",        "新加坡管理大学"),
+        ("www.sutd.edu.sg",       "新加坡科技设计大学"),
+    ]),
+    "TW": ("台湾", [
+        ("www.asus.com",     "华硕国际官网"),
+        ("www.msi.com",      "微星国际官网"),
+        ("www.gigabyte.com", "技嘉国际官网"),
+        ("www.evaair.com",   "台湾长荣航空"),
+        ("www.gskill.com",   "台湾芝奇内存"),
+    ]),
+    "KR": ("韩国", [
+        ("www.naver.com",     "韩国 Naver 门户"),
+        ("www.samsung.com",   "三星国际官网"),
+        ("www.koreanair.com", "大韩航空官网"),
+        ("www.coupang.com",   "韩国 Coupang 电商"),
+        ("www.cj.net",        "韩国 CJ 集团官网"),
+    ]),
+    "EU": ("欧洲", [
+        ("www.adidas.com",        "德国阿迪达斯官网"),
+        ("www.nokia.com",         "芬兰诺基亚官网"),
+        ("www.mercedes-benz.com", "梅赛德斯-奔驰官网"),
+        ("www.tudelft.nl",        "荷兰代尔夫特理工"),
+        ("www.postgresql.org",    "PostgreSQL (奥地利)"),
+    ]),
+    "GB": ("英国", [
+        ("www.virginatlantic.com",  "英国维珍航空"),
+        ("www.marksandspencer.com", "英国玛莎百货"),
+        ("www.unilever.com",        "英国联合利华"),
+        ("www.arm.com",             "英国 Arm 架构官网"),
+        ("www.cam.ac.uk",           "剑桥大学官网"),
+    ]),
+}
+cc = os.environ.get("VPS_CC", "")
+if cc in ("US", "CA", "JP", "HK", "SG", "TW", "KR", "GB"):
+    rk = cc
+elif cc in ("DE", "NL", "FR", "CH", "AT", "SE", "FI", "PL", "IT", "ES", "LU", "IE", "NO", "DK", "BE", "CZ"):
+    rk = "EU"
+else:
+    rk = ""
+
+r_name, r_pool = REGIONAL.get(rk, ("", []))
+all_items = [("REG", h, d) for h, d in r_pool] + [("GLB", h, d) for h, d in GLOBAL_POOL]
+
+def probe(item):
+    grp, host, desc = item
+    ctx = ssl.create_default_context()
+    ctx.set_alpn_protocols(["h2", "http/1.1"])
+    t0 = time.monotonic()
+    try:
+        with socket.create_connection((host, 443), timeout=2.5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ss:
+                if ss.version() == "TLSv1.3" and ss.selected_alpn_protocol() == "h2":
+                    return (grp, (time.monotonic() - t0) * 1000, host, desc)
+    except Exception:
+        pass
+    return None
+
+with ThreadPoolExecutor(max_workers=12) as ex:
+    res = [r for r in ex.map(probe, all_items) if r]
+
+reg_res = sorted([r for r in res if r[0] == "REG"], key=lambda x: x[1])
+glb_res = sorted([r for r in res if r[0] == "GLB"], key=lambda x: x[1])
+if r_name and reg_res:
+    print(f"HDR|当前地区推荐 ({r_name}) · 按实测延迟排序")
+    for _, rtt, host, desc in reg_res[:5]:
+        print(f"ITEM|{host}|{rtt:.1f}|{desc}")
+if glb_res:
+    print("HDR|全球通用兜底池 · 跨区通用 · 按实测延迟排序")
+    for _, rtt, host, desc in glb_res[:5]:
+        print(f"ITEM|{host}|{rtt:.1f}|{desc}")
+SNIPY
+) || true
+    [ -n "$sni_list" ] || return 1
+    idx=1
+    while IFS='|' read -r tag f1 f2 f3; do
+        [ -z "$tag" ] && continue
+        if [ "$tag" = "HDR" ]; then
+            echo ""
+            printf "  ${SKY}【%s】${R}\n" "$f1"
+        elif [ "$tag" = "ITEM" ]; then
+            SNI_ARR+=("$f1")
+            printf "    ${GREEN}%2d)${R} ${WHITE}%-23s${R} ${DIM}(${YELLOW}%6s ms${DIM} | ${CYAN}%s${DIM})${R}\n" "$idx" "$f1" "$f2" "$f3"
+            idx=$((idx + 1))
+        fi
+    done <<< "$sni_list"
+    [ "${#SNI_ARR[@]}" -gt 0 ]
+}
+
+readonly_sni_menu() {
+    local arg_dom="${1:-}" pick="" check_dom=""
+    echo ""
+    command -v python3 >/dev/null 2>&1 || { echo "  [提示] 当前系统缺少 python3，请先执行 apt-get update && apt-get install -y python3"; exit 1; }
+    echo "=================================================================="
+    echo "  REALITY 优选 SNI 测速与域名四重体检（纯只读，不修改本机任何配置）"
+    echo "=================================================================="
+    if [ -n "$arg_dom" ]; then
+        check_dom=$(clean_domain "$arg_dom")
+        if [[ ! "$check_dom" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+            echo "  [错误] 域名格式非法: ${check_dom}"
+            exit 1
+        fi
+        if verify_reality_sni "$check_dom"; then
+            printf "  ${GREEN}-> [可直接填入]${R} SNI: ${WHITE}%s${R}  |  Dest: ${WHITE}%s:443${R}\n" "$check_dom" "$check_dom"
+        else
+            printf "  ${ORANGE}-> [不建议选用]${R} %s 存在风险项，建议改用无警告的本土非 CF 域名\n" "$check_dom"
+        fi
+        echo "=================================================================="
+        exit 0
+    fi
+
+    if run_sni_speedtest_table; then
+        if [ ! -t 0 ]; then
+            echo ""
+            verify_reality_sni "${SNI_ARR[0]}" || true
+            printf "  ${GREEN}-> [推荐参数]${R} SNI: ${WHITE}%s${R}  |  Dest: ${WHITE}%s:443${R} ${DIM}(纯只读未改配置)${R}\n" "${SNI_ARR[0]}" "${SNI_ARR[0]}"
+            echo "=================================================================="
+            exit 0
+        fi
+        echo ""
+        read -rp "$(printf "  ${YELLOW}-> 输入编号 [1-${#SNI_ARR[@]}] 或自定义域名做四重体检 (回车默认测第 1 名，q 退出): ${R}")" pick || pick="q"
+        if [[ "${pick:-}" =~ ^[Qq0]$ ]]; then
+            echo "=================================================================="
+            exit 0
+        fi
+        if [ -z "${pick:-}" ]; then
+            check_dom="${SNI_ARR[0]}"
+            if verify_reality_sni "$check_dom"; then
+                printf "  ${GREEN}-> [推荐参数]${R} SNI: ${WHITE}%s${R}  |  Dest: ${WHITE}%s:443${R} ${DIM}(纯只读未改配置)${R}\n" "$check_dom" "$check_dom"
+            else
+                printf "  ${ORANGE}-> [提示]${R} %s 存在告警，建议从上方列表另选其它候选站\n" "$check_dom"
+            fi
+            echo "=================================================================="
+            exit 0
+        fi
+        while [ -n "${pick:-}" ] && [[ ! "$pick" =~ ^[Qq0]$ ]]; do
+            if [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -le "${#SNI_ARR[@]}" ]; then
+                check_dom="${SNI_ARR[$((pick - 1))]}"
+            else
+                check_dom=$(clean_domain "$pick")
+            fi
+            if [[ "$check_dom" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+                if verify_reality_sni "$check_dom"; then
+                    printf "  ${GREEN}-> [可直接填入]${R} SNI: ${WHITE}%s${R}  |  Dest: ${WHITE}%s:443${R}\n" "$check_dom" "$check_dom"
+                else
+                    printf "  ${ORANGE}-> [不建议选用]${R} %s 存在上述风险项，请换其它本土非 CF 域名\n" "$check_dom"
+                fi
+            else
+                printf "  ${ORANGE}-> [提示] 域名或编号格式无效: %s${R}\n" "$pick"
+            fi
+            echo ""
+            read -rp "$(printf "  ${YELLOW}-> 继续输入其他编号或自定义域名体检 (直接回车退出): ${R}")" pick || break
+        done
+    else
+        printf "  ${ORANGE}-> [提示] 候选池测速未命中可用站点，可直接输入自定义域名体检：${R}\n"
+        if [ -t 0 ]; then
+            read -rp "$(printf "  ${YELLOW}-> 请输入要体检的域名 (直接回车退出): ${R}")" pick || pick=""
+            if [ -n "${pick:-}" ]; then
+                check_dom=$(clean_domain "$pick")
+                if [[ "$check_dom" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+                    verify_reality_sni "$check_dom" || true
+                else
+                    printf "  ${ORANGE}-> [提示] 域名格式无效: %s${R}\n" "$pick"
+                fi
+            fi
+        fi
+    fi
+    echo "=================================================================="
+    exit 0
 }
 
 prompt_relay_ss() {
@@ -287,69 +513,21 @@ case "$MODE" in
             SNI_CHOICE="${SNI_CHOICE:-1}"
             case "$SNI_CHOICE" in
                 1)
-                    if command -v python3 >/dev/null 2>&1; then
-                        echo "  -> 正在探测机房地区并并发测速本地纯海外 X25519 站点..."
-                        SNI_LIST=$(python3 - << 'SNIPY'
-import ssl, socket, time, json, urllib.request, concurrent.futures
-cc = "US"
-try:
-    cc = json.loads(urllib.request.urlopen("https://ipinfo.io/json", timeout=3).read().decode()).get("country", "US").upper()
-except Exception:
-    pass
-POOLS = {
-    "US": [("www.ebay.com","eBay国际电商"),("www.airbnb.com","Airbnb国际民宿"),("www.ups.com","UPS国际物流"),("www.stanford.edu","斯坦福大学"),("www.harvard.edu","哈佛大学")],
-    "CA": [("www.utoronto.ca","多伦多大学"),("www.ubc.ca","UBC大学"),("www.ebay.com","eBay国际电商"),("www.airbnb.com","Airbnb国际民宿"),("www.ups.com","UPS国际物流")],
-    "JP": [("www.sony.jp","索尼日本"),("www.yahoo.co.jp","日本雅虎"),("www.honda.co.jp","本田日本"),("www.yamaha.com","雅马哈国际"),("www.lovelive-anime.jp","日本动漫官网")],
-    "HK": [("www.mandarinoriental.com","香港文华东方"),("www.k11musea.com","香港K11"),("www.pacificplace.com.hk","香港太古广场"),("www.cityu.edu.hk","香港城大"),("www.hku.hk","香港大学")],
-    "SG": [("www.grab.com","Grab出行"),("www.changiairport.com","樟宜机场"),("www.nus.edu.sg","新加坡国立大学"),("www.smu.edu.sg","新加坡管理大学"),("www.sutd.edu.sg","新科大")],
-    "TW": [("www.asus.com","华硕国际"),("www.msi.com","微星国际"),("www.gigabyte.com","技嘉国际"),("www.evaair.com","长荣航空"),("www.gskill.com","芝奇内存")],
-    "KR": [("www.naver.com","韩国Naver"),("www.samsung.com","三星国际"),("www.koreanair.com","大韩航空"),("www.coupang.com","Coupang电商"),("www.cj.net","韩国CJ集团")],
-    "EU": [("www.adidas.com","德国阿迪达斯"),("www.nokia.com","芬兰诺基亚"),("www.mercedes-benz.com","梅赛德斯奔驰"),("www.tudelft.nl","代尔夫特理工"),("www.postgresql.org","PostgreSQL")],
-    "GB": [("www.virginatlantic.com","维珍航空"),("www.marksandspencer.com","玛莎百货"),("www.unilever.com","联合利华"),("www.arm.com","Arm官网"),("www.cam.ac.uk","剑桥大学")],
-}
-GLOBAL = [("www.gentoo.org","Gentoo官网"),("www.openssl.org","OpenSSL官网"),("www.debian.org","Debian官网"),("www.kernel.org","Linux内核"),("addons.mozilla.org","Firefox扩展商店")]
-rk = cc if cc in ("US","CA","JP","HK","SG","TW","KR","GB") else ("EU" if cc in ("DE","NL","FR","CH","AT","SE","FI","PL","IT","ES","LU","IE","NO","DK","BE","CZ") else "US")
-cands = [("REG", h, d) for h, d in POOLS.get(rk, POOLS["US"])] + [("GLB", h, d) for h, d in GLOBAL]
-def probe(item):
-    grp, host, desc = item
-    ctx = ssl.create_default_context()
-    ctx.set_alpn_protocols(["h2", "http/1.1"])
-    t0 = time.monotonic()
-    try:
-        with socket.create_connection((host, 443), timeout=2.5) as s:
-            with ctx.wrap_socket(s, server_hostname=host) as ss:
-                if ss.version() == "TLSv1.3" and ss.selected_alpn_protocol() == "h2":
-                    return (grp, (time.monotonic() - t0) * 1000, host, desc)
-    except Exception:
-        pass
-    return None
-with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
-    res = [r for r in ex.map(probe, cands) if r]
-seen, out = set(), []
-for grp in ("REG", "GLB"):
-    for _, ms, h, d in sorted([x for x in res if x[0] == grp], key=lambda x: x[1]):
-        if h not in seen:
-            seen.add(h); out.append(f"{h}|{ms:.0f}|{d}")
-        if len(out) >= 6: break
-print("\n".join(out))
-SNIPY
-                        ) || true
-                        if [ -n "$SNI_LIST" ]; then
-                            mapfile -t SNI_ARR <<< "$SNI_LIST"
-                            for i in "${!SNI_ARR[@]}"; do
-                                IFS='|' read -r s_host s_ms s_desc <<< "${SNI_ARR[$i]}"
-                                printf "  [%d] %-28s %4sms  (%s)\n" "$((i+1))" "$s_host" "$s_ms" "$s_desc"
-                            done
-                            read -rp "  -> 请选择编号 [1-${#SNI_ARR[@]}] (回车默认 1): " PICK_IDX
-                            PICK_IDX="${PICK_IDX:-1}"
-                            if [[ "$PICK_IDX" =~ ^[0-9]+$ ]] && [ "$PICK_IDX" -ge 1 ] && [ "$PICK_IDX" -le "${#SNI_ARR[@]}" ]; then
-                                IFS='|' read -r REALITY_SNI _ _ <<< "${SNI_ARR[$((PICK_IDX-1))]}"
-                            else
-                                IFS='|' read -r REALITY_SNI _ _ <<< "${SNI_ARR[0]}"
-                            fi
+                    if run_sni_speedtest_table; then
+                        echo ""
+                        read -rp "$(printf "  ${YELLOW}-> 请选择编号 [1-${#SNI_ARR[@]}] (回车默认 1): ${R}")" PICK_IDX
+                        PICK_IDX="${PICK_IDX:-1}"
+                        if [[ "$PICK_IDX" =~ ^[0-9]+$ ]] && [ "$PICK_IDX" -ge 1 ] && [ "$PICK_IDX" -le "${#SNI_ARR[@]}" ]; then
+                            REALITY_SNI="${SNI_ARR[$((PICK_IDX - 1))]}"
+                        else
+                            REALITY_SNI="${SNI_ARR[0]}"
                         fi
+                        printf "  ${ORANGE}-> 已选定目标 SNI: ${WHITE}%s${R}\n" "$REALITY_SNI"
+                        verify_reality_sni "$REALITY_SNI" || true
+                    else
+                        echo "  [提示] 测速未命中或尚未安装 python3，自动回退 addons.mozilla.org"
+                        REALITY_SNI="addons.mozilla.org"
                     fi
-                    verify_reality_sni "$REALITY_SNI"
                     ;;
                 2) REALITY_SNI="addons.mozilla.org" ;;
                 3) REALITY_SNI="www.gentoo.org" ;;
@@ -360,7 +538,7 @@ SNIPY
                         echo "  [提示] 域名格式异常，自动回退 addons.mozilla.org"
                         REALITY_SNI="addons.mozilla.org"
                     fi
-                    verify_reality_sni "$REALITY_SNI"
+                    verify_reality_sni "$REALITY_SNI" || true
                     ;;
                 *) REALITY_SNI="addons.mozilla.org" ;;
             esac
@@ -589,8 +767,11 @@ print("==================================================================")
 ISPPY
         exit 0
         ;;
+    6|sni)
+        readonly_sni_menu "$SNI_QUERY_ARG"
+        ;;
     *)
-        echo "[错误] 无效编号: ${MODE}，仅支持 1 / 2 / 3 / 4 / 5"
+        echo "[错误] 无效编号: ${MODE}，仅支持 1 / 2 / 3 / 4 / 5 / 6"
         exit 1
         ;;
 esac

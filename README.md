@@ -34,7 +34,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 
 ![CatEacc vps-xray-runbook 无面板纯手搓 JSON 版终端界面](https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/xray_pure_menu.png)
 
-### 脚本核心模式速览（`setup.sh` 7 模式 / `pure.sh` 5 模式）
+### 脚本核心模式速览（`setup.sh` 8 模式 / `pure.sh` 6 模式）
 
 * **方案 1：`VLESS + REALITY`（支持一键中转家宽）**
   * 支持 RPRX 最新 **`XHTTP + REALITY`** 与全客户端通吃的 **`raw + REALITY + xtls-rprx-vision`**，端口回车默认 `443`（也可手填如 `8443` / 高位端口）；
@@ -46,7 +46,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
   * 按线路可选标准 **QUIC BBR**（精品优化线）或 **Brutal**（廉价高丢包线）；若同机已跑 `TCP 443 REALITY`，默认错开至 `UDP 8443` 监听（配合端口跳跃，避免同 443 端口返回矛盾证书）。
 * **方案 4：`纯系统底层内核调优模式`**
   * 仅部署 BBR / 按内存分档网络缓冲区 / 1GB Swap / MPTCP 防护 / Fail2ban / Chrony 对时 / Journald 50M 收敛，不安装任何代理面板。
-* **只读实用工具**：支持 `[5]` 一键回滚底层调优、`[6]` 只读导出全部节点链接与二维码、`[7]` **本机家宽 / 商宽 / 机房 IP 与环境快检**（直查 PTR 反解、官方 RDAP 归属、机房属性、Hyper-V 与出站 `TCP 25` 状态，不碰易误报的流媒体解锁）。
+* **只读实用工具**：支持 `[5]` 一键回滚底层调优、`[6]` 只读导出全部节点链接与二维码、`[7]` **本机家宽 / 商宽 / 机房 IP 与环境快检**（直查 PTR 反解、官方 RDAP 归属、机房属性、Hyper-V 与出站 `TCP 25` 状态，不碰易误报的流媒体解锁）、`[8]` **REALITY 优选 SNI 测速与域名四重体检**（纯只读并发测速当前地区本土非 CF 候选池，并支持输入任意自定义域名检测 `TLS 1.3 + H2` / 非 CF / 无国内 CDN / 大陆直连可达，不改动本机任何配置；亦支持 `bash setup.sh sni` 直达）。
 
 ---
 
