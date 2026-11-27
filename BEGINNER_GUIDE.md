@@ -46,13 +46,17 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 
 脚本会自动检测你的系统并弹出菜单，**新手照着下面按 3 下键就行**：
 
-1. 主菜单输入 **`1`** 回车（选 `VLESS + REALITY`，**无需买域名**，绝大多数人直接选它；只有 IP 已经确定被墙时才选 `2`）。
+> **重要选型提醒（先看自己的 VPS 线路再选方案）**：
+> - **有中国大陆回国优化线路的机子**（如 CN2 GIA / 9929 / CMIN2 / 精品日新）：直接选模式 **`[1]` VLESS + REALITY**，直连延迟最低、跑满带宽。
+> - **普通廉价机房（如 RackNerd 等没有回国优化的美西普通线路）**：晚高峰直连 REALITY 容易丢包卡顿，**这是机房本身回国线路问题，不是脚本或协议问题**——这类机器强烈建议直接选模式 **`[2]` Cloudflare CDN 优选**（自带企业级优选入口）或模式 **`[3]` Hysteria 2**。
+
+1. 主菜单输入 **`1`** 回车（选 `VLESS + REALITY`，**无需买域名**；如果买的是 RN 等无回国优化廉价机或 IP 已墙，推荐直接选 `2`）。
 2. 协议形态输入 **`2`** 回车（选 `VLESS + raw + REALITY + Vision`，小火箭 / v2rayN / Clash 全客户端通吃）。
 3. 后面的「监听端口」「优选 SNI」「是否中转海外家宽」**全部直接按回车走默认**即可（脚本会自动按机房地区并发测速、做四重体检挑出最优伪装域名）。
 
 ![第 1 步：运行 setup.sh 按 3 下键示意图](docs/images/guide_step2_install.png)
 
-> **真实终端交互实拍（已在 Debian 12 实机跑通，IP 已脱敏）**：
+> **Debian 12 实机运行 `setup.sh` 交互过程**：
 >
 > ![实机运行 setup.sh 交互选择截图](docs/images/real_shot1_interactive.png)
 
@@ -66,7 +70,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 
 ![第 2 步：安装完成后的 3 个必看区域](docs/images/guide_step3_output.png)
 
-> **真实部署完成界面 & 二维码实拍（IP 与账密已脱敏）**：
+> **部署完成界面 & 终端二维码示例**：
 >
 > ![实机部署完成与 3x-ui SSH 隧道指引截图](docs/images/real_shot2_complete.png)
 >
@@ -95,11 +99,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
    - 浏览器如果提示 **「您的连接不是私密连接」**，这是本地自签证书的正常现象，点左下角 **「高级」 -> 「继续前往 127.0.0.1」**。
    - 输入你刚才保存的面板账号和密码即可登录。
 
-### 面板里最常用的 2 个操作（避坑必看）
+### 面板里最常用的 3 个操作（避坑必看）
 
 - **怎么给朋友多加一个账号（多设备/限制流量）？**
   - 进入左侧 **「入站列表（Inbounds）」** -> 点已经建好的入站展开（或在左侧 **「客户（Clients）」** 点 **「+ 添加客户」**），填个名字和流量上限即可。
   - **千万不要「复制整个入站」再随便改端口！** 同一个端口本来就可以挂几十个客户，共用原端口最稳妥。
+- **怎么在同一个端口下，单独开一个走自己「住宅代理 IP」的节点？**
+  - 同样**不要复制入站改端口**：先在原入站里点「添加客户」新建一个用户（如 `home-ip`）-> 左侧进 **「出站规则（Outbounds）」** 添加你的 `socks`/`http` 住宅代理（标签如 `my-home`）-> 左侧进 **「路由规则（Routing）」** 加一条「用户 `home-ip` -> 出站 `my-home`」保存重载即可，原节点和新住宅节点互不影响。
 - **忘记 3x-ui 面板密码怎么办？**
   - 重新 SSH 连上 VPS，再跑一遍 `setup.sh` 选模式 **`[6]`（一键导出所有节点链接 & 面板访问命令）**，屏幕上会直接显示你的面板用户名，并给出一行可直接复制的一键重置密码命令。
 
@@ -128,7 +134,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 
 | 遇到的问题 | 最可能原因 | 10 秒解决办法 |
 | :--- | :--- | :--- |
-| **SSH 连不上，报 `Connection timed out`** | IP 被墙 / 输错密码太多次被 `fail2ban` 封 IP / 云安全组没放行 | 去 `ping.pe` 测 `IP:22`；海外绿国内红就挂代理连；国内外全红去商家后台查开机状态和安全组 |
+| **SSH 连不上，报 `Connection timed out` 或 `Connection closed by ... port 22`** | IP 被墙 / 输错密码太多次被 `fail2ban` 封 IP / 电脑梯子连着自己 VPS 套娃 / 安全组没放行 | 先关掉电脑梯子或换个其他节点，或连手机热点换个 IP 再试；去 `ping.pe` 测 `IP:22`（海外绿国内红就挂代理连） |
+| **直连 VLESS REALITY 晚高峰很卡、丢包严重** | 廉价普通机房（如 RackNerd）没有中国大陆回国优化线路，属于线路问题而非脚本问题 | 改用模式 **`[2]` Cloudflare CDN 优选**（自带实测企业级入口）或模式 **`[3]` Hysteria 2** |
 | **节点测速超时、完全连不上** | 云厂商安全组没放行 `443`（或你选的端口）/ 节点地址误填了 `localhost` | 检查 AWS/阿里云/甲骨文后台安全组放行对应 TCP 端口；检查客户端里服务器地址是不是 VPS 真实公网 IP |
 | **测速有延迟，但所有网页都打不开** | CF 端口改成了非白名单端口 / CF SSL 模式没选 `Full` / 换优选时把 SNI 也改了 | 端口改回 `2053` 或 `443`；CF 后台 SSL 选 `Full`；客户端确认 SNI 和 Host 填的是你自己的域名 |
 | **手机流量（4G/5G）能用，连家里移动宽带能搜谷歌但点不开结果** | 中国移动宽带 IPv6 丢包，或客户端分流规则没覆盖/DNS 污染 | 先把代理软件切 **「全局模式」** 测试；并在代理软件设置里 **关闭 IPv6**（或关闭路由器 IPv6） |
