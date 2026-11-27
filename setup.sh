@@ -831,17 +831,21 @@ if kv:
         wbase = '/' + wbase
     scheme = 'https' if kv.get('webCertFile', '').strip() else 'http'
     p_flag = f"-p {ssh_port} " if ssh_port != '22' else ""
+    Y, G, C, O, W, D, N = "\033[1;33m", "\033[1;32m", "\033[1;36m", "\033[38;5;208m", "\033[1;97m", "\033[38;5;245m", "\033[0m"
     print("")
-    print("==================================================================")
-    print(f"  【3x-ui 面板安全访问指南（面板已锁死 127.0.0.1:{wport}）】")
-    print("==================================================================")
-    print("  第 1 步：在【自己电脑】的 CMD / PowerShell / Mac 终端（不要在 VPS 里敲！）只复制运行下面这行：")
+    print(f"{Y}=================================================================={N}")
+    print(f"  {Y}【3x-ui 面板安全访问指南】{N} {O}(已锁死 127.0.0.1:{wport}，公网直连会拒绝访问属正常！){N}")
+    print(f"{Y}=================================================================={N}")
+    print(f"  {W}第 1 步：{N}在{O}【自己电脑】{N}按 Win+R 输 cmd 回车（Mac 开终端，{O}千万别在 VPS 里敲！{N}），复制运行：")
     print("")
-    print(f"  ssh {p_flag}-L {wport}:127.0.0.1:{wport} root@{server_ip}")
+    print(f"  {G}ssh {p_flag}-L {wport}:127.0.0.1:{wport} root@{server_ip}{N}")
     print("")
-    print("  第 2 步：输入 VPS 密码登录并保持窗口别关，然后用电脑浏览器打开：")
-    print(f"  {scheme}://127.0.0.1:{wport}{wbase}")
-print("==================================================================")
+    print(f"  {D}（提示：输入 VPS root 密码时屏幕不显示字符属正常，输完回车；登录成功后黑框窗口【不要关闭】！）{N}")
+    print(f"  {W}第 2 步：{N}用自己电脑浏览器打开下方本地地址：")
+    print(f"  {C}{scheme}://127.0.0.1:{wport}{wbase}{N}")
+    print(f"  {W}第 3 步：{N}浏览器若提示“不是私密连接”，点{G}「高级」->「继续前往」{N}（本地自签证书正常现象）。")
+    print(f"  {D}（忘记面板账密时，可在 VPS 终端里直接输入 x-ui 查看或重置）{N}")
+print("\033[1;33m==================================================================\033[0m")
 EXPPY
         exit 0
         ;;
@@ -1942,54 +1946,58 @@ SSH_P_FLAG=""
 [ "$SSH_PORT_NOW" != "22" ] && SSH_P_FLAG="-p ${SSH_PORT_NOW} "
 
 echo ""
-echo "=================================================================="
-echo "  部署完成！服务状态验收："
-echo "  - x-ui          : $(systemctl is-active x-ui 2>/dev/null || true)"
-[ "$MODE" = "3" ] && echo "  - hysteria      : $(systemctl is-active hysteria-server 2>/dev/null || true)"
-echo "  - Xray 内核     : $($XRAY_BIN version | head -n 1 || true)"
-echo "------------------------------------------------------------------"
-echo "  【3x-ui 面板访问指南】（已锁定 127.0.0.1:${PANEL_PORT}，公网不可直连）"
-echo "  第 1 步：在【自己电脑】的 CMD / PowerShell / Mac 终端（不要在 VPS 里敲！）只复制运行下面这行："
-echo ""
-echo "  ssh ${SSH_P_FLAG}-L ${PANEL_PORT}:127.0.0.1:${PANEL_PORT} root@${SERVER_IP}"
-echo ""
-echo "  第 2 步：输入 VPS 密码登录并保持窗口别关，然后用电脑浏览器打开："
-echo "  ${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
+printf "${GREEN}==================================================================${R}\n"
+printf "  ${GREEN}部署完成！服务状态验收：${R}\n"
+printf "  ${SKY}- x-ui          :${R} ${GREEN}%s${R}\n" "$(systemctl is-active x-ui 2>/dev/null || true)"
+[ "$MODE" = "3" ] && printf "  ${SKY}- hysteria      :${R} ${GREEN}%s${R}\n" "$(systemctl is-active hysteria-server 2>/dev/null || true)"
+printf "  ${SKY}- Xray 内核     :${R} ${PINK}%s${R}\n" "$($XRAY_BIN version | head -n 1 || true)"
+printf "${YELLOW}==================================================================${R}\n"
+printf "  ${YELLOW}【3x-ui 面板安全访问指南】${R} ${ORANGE}(已锁死 127.0.0.1:%s，公网直连会拒绝访问属正常！)${R}\n" "${PANEL_PORT}"
+printf "${YELLOW}==================================================================${R}\n"
+printf "  ${WHITE}第 1 步：${R}在${ORANGE}【自己电脑】${R}按 Win+R 输 cmd 回车（Mac 开终端，${ORANGE}千万别在 FinalShell/VPS 里敲！${R}），复制运行：\n\n"
+printf "  ${GREEN}ssh %s-L %s:127.0.0.1:%s root@%s${R}\n\n" "${SSH_P_FLAG}" "${PANEL_PORT}" "${PANEL_PORT}" "${SERVER_IP}"
+printf "  ${DIM}（提示：输入 VPS root 密码时屏幕不显示字符属正常，输完回车；登录成功后黑框窗口【不要关闭】！）${R}\n"
+printf "  ${WHITE}第 2 步：${R}打开自己电脑浏览器访问下方本地地址：\n"
+printf "  ${CYAN}%s://127.0.0.1:%s/%s${R}\n" "${PANEL_SCHEME}" "${PANEL_PORT}" "${PANEL_PATH}"
+printf "  ${WHITE}第 3 步：${R}浏览器若提示“不是私密连接”，点${GREEN}「高级」->「继续前往」${R}（本地自签证书正常现象）。\n"
+printf "  ${DIM}（忘记面板账密时，可在 VPS 终端里直接输入 x-ui 查看或重置）${R}\n"
 if [ -f /tmp/setup_result.txt ]; then
     if grep -q "^REUSED_EXISTING=1" /tmp/setup_result.txt; then
-        echo "------------------------------------------------------------------"
-        echo "  [提示] 检测到端口 ${LISTEN_PORT} 已存在入站节点，已复用原节点凭据并同步更新路由规则。"
+        printf "${DIM}------------------------------------------------------------------${R}\n"
+        printf "  ${ORANGE}[提示] 检测到端口 %s 已存在入站节点，已复用原节点凭据并同步更新路由规则。${R}\n" "${LISTEN_PORT}"
     fi
     if grep -q "RESULT_TYPE=RESIDENTIAL_SS" /tmp/setup_result.txt; then
-        echo "------------------------------------------------------------------"
-        echo "  【家宽落地 SS-2022 中转凭据】（请复制到前置优化机脚本中）："
+        printf "${DIM}------------------------------------------------------------------${R}\n"
+        printf "  ${PINK}【家宽落地 SS-2022 中转凭据】${R}${DIM}（请复制到前置优化机脚本中）：${R}\n"
         grep -E "^SS_(IP|PORT|PASS)=" /tmp/setup_result.txt | sed 's/^/  /'
     elif grep -q "RESULT_TYPE=LINK" /tmp/setup_result.txt; then
-        echo "------------------------------------------------------------------"
-        echo "  【客户端导入链接】："
+        printf "${DIM}------------------------------------------------------------------${R}\n"
+        printf "  ${GREEN}【客户端导入链接】${R}${DIM}（请先关掉客户端顶部总开关再测速！）：${R}\n"
         SHARE_URL=$(grep "^SHARE_LINK=" /tmp/setup_result.txt | cut -d'=' -f2- || true)
-        echo "  ${SHARE_URL}"
+        printf "  ${WHITE}%s${R}\n" "${SHARE_URL}"
         if command -v qrencode >/dev/null 2>&1 && [ -n "$SHARE_URL" ]; then
-            echo "  【手机扫码导入（Shadowrocket / v2rayNG / Stash）】："
+            printf "  ${CYAN}【手机扫码导入（Shadowrocket / v2rayNG / Stash）】：${R}\n"
             qrencode -t ANSIUTF8 -m 1 "$SHARE_URL" || true
         fi
     fi
     rm -f /tmp/setup_result.txt
 fi
 if [ "$MODE" = "2" ]; then
-    echo "------------------------------------------------------------------"
-    echo "  【Cloudflare 后台 4 步检查清单（小白照着点）】："
-    echo "  1. DNS 添加 A 记录: ${CF_DOMAIN} -> ${SERVER_IP}（务必开启小黄云 Proxied）"
-    echo "  2. SSL/TLS 加密模式设为: Full（自签证书勿选 Flexible 或 Full Strict，防 525/526）"
-    echo "  3. 云厂商安全组放行: TCP ${LISTEN_PORT}（CF 支持 443/2053/2083/2087/2096/8443）"
-    echo "  4. 客户端优选提速: 仅改「地址(Address)」为优选 IP/域名，Host 与 SNI 保持 ${CF_DOMAIN} 不变"
+    printf "${YELLOW}------------------------------------------------------------------${R}\n"
+    printf "  ${YELLOW}【Cloudflare 后台 4 步检查清单 & 防坑必看】：${R}\n"
+    printf "  ${GREEN}1.${R} DNS 添加 A 记录: ${CYAN}%s${R} -> ${CYAN}%s${R}（${ORANGE}务必开启小黄云 Proxied${R}）\n" "${CF_DOMAIN}" "${SERVER_IP}"
+    printf "  ${GREEN}2.${R} SSL/TLS 加密模式必须选: ${GREEN}Full（完全）${R}（勿选 Flexible 或 Full Strict，防 525/526）\n"
+    printf "  ${GREEN}3.${R} 云厂商安全组放行: ${CYAN}TCP %s${R}（CF 免费 HTTPS 端口仅支持 443/2053/2083/2087/2096/8443）\n" "${LISTEN_PORT}"
+    printf "  ${GREEN}4.${R} ${ORANGE}国内防超时优选技巧：${R}若直连自己域名超时（CF 免费段 IP 国内常丢包），在客户端编辑节点，\n"
+    printf "     ${WHITE}仅把「地址(Address)」改为 CF 优选域名（如 www.visa.com.hk）或优选 IP${R}，\n"
+    printf "     ${WHITE}Host 与 SNI 保持 %s 不变${R}；测试前请${ORANGE}先关掉客户端总开关并用 4G/5G 测速${R}！\n" "${CF_DOMAIN}"
 fi
 if [ -n "$HY2_LINK" ]; then
-    echo "------------------------------------------------------------------"
-    echo "  【Hysteria 2 导入链接】："
-    echo "  ${HY2_LINK}"
+    printf "${DIM}------------------------------------------------------------------${R}\n"
+    printf "  ${PINK}【Hysteria 2 导入链接】：${R}\n"
+    printf "  ${WHITE}%s${R}\n" "${HY2_LINK}"
     if command -v qrencode >/dev/null 2>&1; then
-        echo "  【手机扫码导入（Shadowrocket / v2rayNG / Stash）】："
+        printf "  ${CYAN}【手机扫码导入（Shadowrocket / v2rayNG / Stash）】：${R}\n"
         qrencode -t ANSIUTF8 -m 1 "$HY2_LINK" || true
     fi
 fi
