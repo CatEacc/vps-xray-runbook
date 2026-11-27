@@ -477,12 +477,61 @@ readonly_sni_menu() {
     exit 0
 }
 
+NODE_PREFIX=""
+CLIENT_COUNT="1"
+CLIENT_REMARKS=""
+RES_PROTO="ss"
+RES_USER=""
+
+prompt_multi_clients() {
+    local def_prefix="$1"
+    printf "\n  ${CYAN}─── 节点命名与同端口批量添加客户（直接回车默认单用户） ───${R}\n"
+    read -rp "$(printf "  ${YELLOW}请输入节点前缀名（如 att-vless-reality，回车默认 %s）: ${R}" "$def_prefix")" NODE_PREFIX
+    NODE_PREFIX=$(printf "%s" "${NODE_PREFIX:-$def_prefix}" | tr -d '\r\n' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+    [ -z "$NODE_PREFIX" ] && NODE_PREFIX="$def_prefix"
+
+    read -rp "$(printf "  ${YELLOW}本次在该端口添加几个客户？[1-50] (回车默认 1): ${R}")" CLIENT_COUNT
+    if [[ ! "${CLIENT_COUNT:-1}" =~ ^[0-9]+$ ]] || [ "${CLIENT_COUNT:-1}" -lt 1 ] || [ "${CLIENT_COUNT:-1}" -gt 50 ]; then
+        CLIENT_COUNT="1"
+    fi
+
+    if [ "$CLIENT_COUNT" -eq 1 ]; then
+        read -rp "$(printf "  ${YELLOW}请输入客户备注名（如 自用，留空回车自动生成随机 8 位英文名）: ${R}")" CLIENT_REMARKS
+    else
+        read -rp "$(printf "  ${YELLOW}请输入 %s 个客户备注名（英文逗号分隔，如 自用,朋友A；留空或不足自动补随机英文）: ${R}" "$CLIENT_COUNT")" CLIENT_REMARKS
+    fi
+    CLIENT_REMARKS=$(printf "%s" "${CLIENT_REMARKS:-}" | tr -d '\r\n')
+}
+
 prompt_relay_target() {
-    printf "\n  ${CYAN}─── 后端家宽中转对接方式 ───${R}\n"
-    printf "  ${GREEN}[1]${R} ${WHITE}粘贴 ss:// 分享链接${R} ${DIM}(自动解析 IP/端口/密钥，也支持直接输入 IP 手填)${R}\n"
+    RES_PROTO="ss"
+    RES_USER=""
+    printf "\n  ${CYAN}─── 后端家宽 / 住宅代理中转对接方式 ───${R}\n"
+    printf "  ${GREEN}[1]${R} ${WHITE}粘贴自建家宽 ss:// 分享链接${R} ${DIM}(自动解析 IP/端口/密钥，也支持直接输入 IP 手填)${R}\n"
     printf "  ${GREEN}[2]${R} ${WHITE}全自动远程部署家宽机并对接${R} ${PINK}★ 终极懒人版 · 填 SSH 账密自动装好并拉回凭据${R}\n"
-    read -rp "$(printf "  ${YELLOW}请选择对接方式 [1-2] (回车默认 1): ${R}")" RELAY_MODE
+    printf "  ${GREEN}[3]${R} ${WHITE}绑定第三方静态住宅代理（SOCKS5 / HTTP）${R} ${CYAN}· 填 IP:端口:账号:密码 · 支持同端口按客户独立分流${R}\n"
+    read -rp "$(printf "  ${YELLOW}请选择对接方式 [1-3] (回车默认 1): ${R}")" RELAY_MODE
     RELAY_MODE="${RELAY_MODE:-1}"
+
+    if [ "$RELAY_MODE" = "3" ]; then
+        printf "  ${GREEN}[1]${R} SOCKS5  ${GREEN}[2]${R} HTTP\n"
+        read -rp "$(printf "  ${SKY}-> 请选择住宅代理协议 [1-2] (回车默认 1 SOCKS5): ${R}")" PROXY_TYPE_PICK
+        [ "${PROXY_TYPE_PICK:-1}" = "2" ] && RES_PROTO="http" || RES_PROTO="socks"
+        read -rp "$(printf "  ${SKY}-> 请输入住宅代理 IP 或域名: ${R}")" RES_IP
+        RES_IP=$(printf "%s" "$RES_IP" | tr -d '[:space:]')
+        read -rp "$(printf "  ${SKY}-> 请输入住宅代理端口: ${R}")" RES_PORT
+        RES_PORT=$(validate_port "${RES_PORT:-1080}" 1080)
+        read -rp "$(printf "  ${SKY}-> 请输入住宅代理用户名（无认证直接回车）: ${R}")" RES_USER
+        RES_USER=$(printf "%s" "$RES_USER" | tr -d '\r\n')
+        if [ -n "$RES_USER" ]; then
+            read -rp "$(printf "  ${SKY}-> 请输入住宅代理密码: ${R}")" RES_SS_PASS
+            RES_SS_PASS=$(printf "%s" "$RES_SS_PASS" | tr -d '\r\n')
+        else
+            RES_SS_PASS=""
+        fi
+        printf "  ${GREEN}-> [已配置]${R} 第三方住宅出站: ${CYAN}%s://%s:%s${R}\n" "$RES_PROTO" "$RES_IP" "$RES_PORT"
+        return 0
+    fi
 
     if [ "$RELAY_MODE" = "2" ]; then
         read -rp "$(printf "  ${SKY}-> 后端家宽机 SSH IP: ${R}")" RES_SSH_IP
@@ -629,7 +678,10 @@ case "$MODE" in
                     ;;
                 *) REALITY_SNI="addons.mozilla.org" ;;
             esac
-            read -rp "$(printf "  ${YELLOW}是否一键中转到后端海外家宽机？[y/N]: ${R}")" ENABLE_RELAY
+            DEF_NODE_PRE="VLESS-Vision-REALITY"
+            [ "$REALITY_SUBMODE" = "1" ] && DEF_NODE_PRE="VLESS-XHTTP-REALITY"
+            prompt_multi_clients "$DEF_NODE_PRE"
+            read -rp "$(printf "  ${YELLOW}是否给这批新客户绑定后端家宽 / 住宅代理落地？[y/N]: ${R}")" ENABLE_RELAY
             ENABLE_RELAY="${ENABLE_RELAY:-n}"
             if [[ "$ENABLE_RELAY" =~ ^[Yy]$ ]]; then
                 prompt_relay_target
@@ -679,13 +731,20 @@ case "$MODE" in
             *) CF_OPT_HOST="www.visa.com.hk" ;;
         esac
         printf "  ${GREEN}-> 已选定 CF 优选入口:${R} ${WHITE}%s${R} ${DIM}(Host/SNI 保持 %s 不变)${R}\n" "$CF_OPT_HOST" "$CF_DOMAIN"
+        prompt_multi_clients "CF-VLESS-XHTTP-TLS"
+        read -rp "$(printf "  ${YELLOW}是否给这批新客户绑定后端家宽 / 住宅代理落地？[y/N]: ${R}")" ENABLE_RELAY
+        ENABLE_RELAY="${ENABLE_RELAY:-n}"
+        if [[ "$ENABLE_RELAY" =~ ^[Yy]$ ]]; then
+            prompt_relay_target
+        fi
         ;;
     3)
         read -rp "$(printf "  ${YELLOW}请输入 Hysteria 2 本地 UDP 监听端口 (回车默认 8443 以错开 TCP 443，也可填 443): ${R}")" LISTEN_PORT
         LISTEN_PORT=$(validate_port "${LISTEN_PORT:-8443}" 8443)
         read -rp "$(printf "  ${YELLOW}是否为廉价高丢包线路开启 Brutal？(CN2/9929 精品线强烈选 n) [y/N]: ${R}")" HY2_BRUTAL
         HY2_BRUTAL="${HY2_BRUTAL:-n}"
-        read -rp "$(printf "  ${YELLOW}是否一键中转到后端海外家宽机？[y/N]: ${R}")" ENABLE_RELAY
+        prompt_multi_clients "Hy2-PortHopping"
+        read -rp "$(printf "  ${YELLOW}是否一键中转到后端家宽 / 住宅代理？[y/N]: ${R}")" ENABLE_RELAY
         ENABLE_RELAY="${ENABLE_RELAY:-n}"
         if [[ "$ENABLE_RELAY" =~ ^[Yy]$ ]]; then
             prompt_relay_target
@@ -1419,10 +1478,11 @@ install -m 600 /dev/null /tmp/setup_result.txt
 XRAY_BUF=$([ "${MEM_MB:-1000}" -le 700 ] && echo 32 || echo 64) \
 MODE="$MODE" REALITY_SUBMODE="$REALITY_SUBMODE" LISTEN_PORT="$LISTEN_PORT" \
 REALITY_SNI="$REALITY_SNI" CF_DOMAIN="$CF_DOMAIN" CF_OPT_HOST="${CF_OPT_HOST:-}" SERVER_IP="$SERVER_IP" \
-ENABLE_RELAY="$ENABLE_RELAY" RES_IP="$RES_IP" RES_PORT="$RES_PORT" RES_SS_PASS="$RES_SS_PASS" \
+ENABLE_RELAY="$ENABLE_RELAY" RES_PROTO="${RES_PROTO:-ss}" RES_IP="$RES_IP" RES_PORT="$RES_PORT" RES_USER="${RES_USER:-}" RES_SS_PASS="$RES_SS_PASS" \
+NODE_PREFIX="${NODE_PREFIX:-}" CLIENT_COUNT="${CLIENT_COUNT:-1}" CLIENT_REMARKS="${CLIENT_REMARKS:-}" \
 XRAY_BIN="$XRAY_BIN" \
 python3 - << 'PYEOF' > /tmp/setup_result.txt
-import sqlite3, json, os, uuid, secrets, subprocess, base64, time, urllib.parse
+import sqlite3, json, os, uuid, secrets, subprocess, base64, time, urllib.parse, re
 os.umask(0o077)
 
 mode = os.environ['MODE']
@@ -1433,9 +1493,17 @@ cf_domain = os.environ['CF_DOMAIN']
 cf_opt_host = os.environ.get('CF_OPT_HOST', '').strip().strip('[]')
 server_ip = os.environ['SERVER_IP']
 enable_relay = os.environ['ENABLE_RELAY'].lower() == 'y'
+res_proto = (os.environ.get('RES_PROTO') or 'ss').strip().lower()
 res_ip = os.environ['RES_IP'].strip()
 res_port = os.environ['RES_PORT'].strip()
+res_user = os.environ.get('RES_USER', '').strip()
 res_ss_pass = os.environ['RES_SS_PASS'].strip()
+node_prefix = os.environ.get('NODE_PREFIX', '').strip()
+try:
+    client_count = max(1, min(50, int(os.environ.get('CLIENT_COUNT', '1') or '1')))
+except Exception:
+    client_count = 1
+client_remarks_raw = os.environ.get('CLIENT_REMARKS', '').strip()
 xray_bin = os.environ['XRAY_BIN']
 
 if port == 62789:
@@ -1530,7 +1598,31 @@ def unique_email(base_email):
             return cand
         cand = f"{base_email}-{secrets.token_hex(2)}"
 
-def upsert_or_reuse_inbound(remark, listen, in_port, proto, settings_obj, stream_obj, tag, client_email=None, client_uuid=None, client_flow="", sub_id=""):
+def gen_rand_suffix(n=8):
+    alphabet = 'abcdefghijklmnopqrstuvwxyz'
+    return ''.join(secrets.choice(alphabet) for _ in range(n))
+
+def build_batch_clients(prefix, flow_val):
+    parts = [p.strip() for p in re.split(r'[,，]+', client_remarks_raw) if p.strip()] if client_remarks_raw else []
+    out = []
+    used = set()
+    for i in range(client_count):
+        suf = parts[i] if i < len(parts) else gen_rand_suffix(8)
+        base_em = f"{prefix}-{suf}" if prefix else suf
+        em = unique_email(base_em)
+        while em in used:
+            em = unique_email(f"{base_em}-{gen_rand_suffix(4)}")
+        used.add(em)
+        u = str(uuid.uuid4())
+        sid_c = secrets.token_hex(8)
+        out.append({
+            "id": u, "flow": flow_val, "email": em,
+            "limitIp": 0, "totalGB": 0, "expiryTime": 0,
+            "enable": True, "subId": sid_c, "reset": 0, "tgId": 0
+        })
+    return out
+
+def upsert_or_reuse_inbound(remark, listen, in_port, proto, settings_obj, stream_obj, tag, client_email=None, client_uuid=None, client_flow="", sub_id="", batch_clients=None):
     ex = c.execute("SELECT id, remark, protocol, settings, stream_settings, tag FROM inbounds WHERE port=?", (in_port,)).fetchone()
     if ex:
         if ex[2] != proto:
@@ -1542,9 +1634,22 @@ def upsert_or_reuse_inbound(remark, listen, in_port, proto, settings_obj, stream
         if (ex_net, ex_st.get('security', 'none')) != (want_net, want_st.get('security', 'none')):
             raise SystemExit(f"端口 {in_port} 已存在不同传输/安全模式的节点 ({ex_net}+{ex_st.get('security', 'none')})，请更换监听端口或在 3x-ui 面板删除旧入站后重跑！")
         actual_tag = ex[5] or tag
-        c.execute("UPDATE inbounds SET enable=1, tag=? WHERE id=?", (actual_tag, ex[0]))
-        return (ex[0], ex[1], ex[2], ex[3], ex[4], actual_tag), True
-    if client_email:
+        ex_set_str = ex[3]
+        if batch_clients:
+            ex_set = json.loads(ex[3] or '{}')
+            cur_cls = ex_set.setdefault('clients', [])
+            for cl in batch_clients:
+                cur_cls.append(cl)
+                c.execute("INSERT INTO client_traffics (inbound_id, enable, email, up, down, expiry_time, total, reset) VALUES (?, 1, ?, 0, 0, 0, 0, 0)", (ex[0], cl['email']))
+                sync_v3_client(ex[0], cl['email'], cl['id'], cl.get('flow', ''), cl.get('subId', secrets.token_hex(8)))
+            ex_set_str = json.dumps(ex_set, indent=2)
+            c.execute("UPDATE inbounds SET enable=1, tag=?, settings=? WHERE id=?", (actual_tag, ex_set_str, ex[0]))
+        else:
+            c.execute("UPDATE inbounds SET enable=1, tag=? WHERE id=?", (actual_tag, ex[0]))
+        return (ex[0], ex[1], ex[2], ex_set_str, ex[4], actual_tag), True
+    if batch_clients:
+        settings_obj["clients"] = batch_clients
+    elif client_email:
         client_email = unique_email(client_email)
         if isinstance(settings_obj, dict) and settings_obj.get("clients"):
             settings_obj["clients"][0]["email"] = client_email
@@ -1554,23 +1659,28 @@ def upsert_or_reuse_inbound(remark, listen, in_port, proto, settings_obj, stream
         VALUES (1, 0, 0, 0, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?)
     """, (remark, listen, in_port, proto, json.dumps(settings_obj, indent=2), json.dumps(stream_obj, indent=2), tag, json.dumps(sniff)))
     inb_id = c.lastrowid
-    if client_email:
+    if batch_clients:
+        for cl in batch_clients:
+            c.execute("INSERT INTO client_traffics (inbound_id, enable, email, up, down, expiry_time, total, reset) VALUES (?, 1, ?, 0, 0, 0, 0, 0)", (inb_id, cl['email']))
+            sync_v3_client(inb_id, cl['email'], cl['id'], cl.get('flow', ''), cl.get('subId', secrets.token_hex(8)))
+    elif client_email:
         c.execute("INSERT INTO client_traffics (inbound_id, enable, email, up, down, expiry_time, total, reset) VALUES (?, 1, ?, 0, 0, 0, 0, 0)", (inb_id, client_email))
         sync_v3_client(inb_id, client_email, client_uuid, client_flow, sub_id or secrets.token_hex(8))
     return (inb_id, remark, proto, json.dumps(settings_obj), json.dumps(stream_obj), tag), False
 
-def build_link_from_row(rem, in_port, proto, s_str, st_str):
+def build_link_from_row(rem, in_port, proto, s_str, st_str, client_override=None):
     s = json.loads(s_str or '{}')
     st = json.loads(st_str or '{}')
     if proto == 'shadowsocks':
         return 'RESIDENTIAL_SS', s.get('password', '')
     if proto == 'vless':
-        cl = (s.get('clients') or [{}])[0]
+        cl = client_override if client_override else (s.get('clients') or [{}])[0]
         u = cl.get('id', '')
         fl = cl.get('flow', '')
         net = st.get('network', 'tcp')
         sec = st.get('security', 'none')
-        r_enc = urllib.parse.quote(rem or f'VLESS-{in_port}')
+        link_label = (cl.get('email') if client_override and cl.get('email') else rem) or f'VLESS-{in_port}'
+        r_enc = urllib.parse.quote(link_label)
         uri_ip = f"[{server_ip}]" if ":" in server_ip and not server_ip.startswith("[") else server_ip
         if sec == 'reality':
             rs = st.get('realitySettings', {})
@@ -1623,13 +1733,14 @@ elif mode == '1':
         elif 'Public' in line or 'Password' in line: pub = line.split(':', 1)[1].strip()
     sid = secrets.token_hex(4)
     u = str(uuid.uuid4())
-    sub_id = secrets.token_hex(8)
-    email = f"reality-{port}"
     tag = f"inbound-{port}"
     flow = "" if submode == '1' else "xtls-rprx-vision"
     net = "xhttp" if submode == '1' else "tcp"
+    default_rem = "VLESS-XHTTP-REALITY" if submode == '1' else "VLESS-Vision-REALITY"
+    remark = node_prefix or default_rem
+    batch_cls = build_batch_clients(remark, flow)
     settings_obj = {
-        "clients": [{"id": u, "flow": flow, "email": email, "limitIp": 0, "totalGB": 0, "expiryTime": 0, "enable": True, "subId": sub_id, "reset": 0}],
+        "clients": batch_cls,
         "decryption": "none", "fallbacks": []
     }
     # 显式指定 minClientVer: "1.0.0"，防止 Xray v26.7.11+ 空值默认 >=26.3.27 拒连 Clash/sing-box/旧版小火箭
@@ -1647,25 +1758,26 @@ elif mode == '1':
     }
     if submode == '1':
         stream_obj["xhttpSettings"] = {"path": "/vless-xhttp", "host": "", "mode": "auto"}
-        remark = "VLESS-XHTTP-REALITY"
-    else:
-        remark = "VLESS-Vision-REALITY"
-    row_inb, reused = upsert_or_reuse_inbound(remark, "", port, "vless", settings_obj, stream_obj, tag, email, u, flow, sub_id)
+    row_inb, reused = upsert_or_reuse_inbound(remark, "", port, "vless", settings_obj, stream_obj, tag, batch_clients=batch_cls)
     _, rem_actual, proto_actual, s_raw, st_raw, tag_actual = row_inb
     inbound_tag_for_relay = tag_actual or tag
-    _, real_link = build_link_from_row(rem_actual, port, proto_actual, s_raw, st_raw)
+    relay_new_emails = [cl['email'] for cl in batch_cls]
+    relay_reused_port = reused
     if reused:
         print("REUSED_EXISTING=1")
     print("RESULT_TYPE=LINK")
-    print(f"SHARE_LINK={real_link}")
+    for idx_c, cl in enumerate(batch_cls):
+        _, cl_link = build_link_from_row(rem_actual, port, proto_actual, s_raw, st_raw, client_override=cl)
+        print(f"SHARE_LINK_ITEM={cl['email']}|{cl_link}")
+        if idx_c == 0 and len(batch_cls) == 1:
+            print(f"SHARE_LINK={cl_link}")
 
 elif mode == '2':
-    u = str(uuid.uuid4())
-    sub_id = secrets.token_hex(8)
-    email = f"cf-xhttp-{port}"
     tag = f"inbound-{port}"
+    remark = node_prefix or "CF-VLESS-XHTTP-TLS"
+    batch_cls = build_batch_clients(remark, "")
     settings_obj = {
-        "clients": [{"id": u, "flow": "", "email": email, "limitIp": 0, "totalGB": 0, "expiryTime": 0, "enable": True, "subId": sub_id, "reset": 0}],
+        "clients": batch_cls,
         "decryption": "none", "fallbacks": []
     }
     # 自动写入优选域名（或 CF 域名）至 externalProxy，避免走 SSH 隧道开面板时二维码变成 localhost 或暴露源站 IP
@@ -1681,18 +1793,25 @@ elif mode == '2':
         "xhttpSettings": {"path": "/vless-xhttp", "mode": "packet-up"},
         "sockopt": {"tcpKeepAliveIdle": 120, "tcpKeepAliveInterval": 20, "trustedXForwardedFor": ["CF-Connecting-IP", "X-Forwarded-For"]}
     }
-    row_inb, reused = upsert_or_reuse_inbound("CF-VLESS-XHTTP-TLS", "", port, "vless", settings_obj, stream_obj, tag, email, u, "", sub_id)
+    row_inb, reused = upsert_or_reuse_inbound(remark, "", port, "vless", settings_obj, stream_obj, tag, batch_clients=batch_cls)
     _, rem_actual, proto_actual, s_raw, st_raw, tag_actual = row_inb
     inbound_tag_for_relay = tag_actual or tag
-    _, real_link = build_link_from_row(rem_actual, port, proto_actual, s_raw, st_raw)
+    relay_new_emails = [cl['email'] for cl in batch_cls]
+    relay_reused_port = reused
     if reused:
         print("REUSED_EXISTING=1")
     print("RESULT_TYPE=LINK")
-    print(f"SHARE_LINK={real_link}")
+    for idx_c, cl in enumerate(batch_cls):
+        _, cl_link = build_link_from_row(rem_actual, port, proto_actual, s_raw, st_raw, client_override=cl)
+        print(f"SHARE_LINK_ITEM={cl['email']}|{cl_link}")
+        if idx_c == 0 and len(batch_cls) == 1:
+            print(f"SHARE_LINK={cl_link}")
 
 elif mode == '3':
     inbound_tag_for_relay = "socks-in-10855"
-    if enable_relay and res_ip and res_port and res_ss_pass:
+    relay_new_emails = []
+    relay_reused_port = False
+    if enable_relay and res_ip and res_port and (res_proto in ('socks', 'http') or res_ss_pass):
         settings_obj = {"auth": "noauth", "udp": True, "ip": "127.0.0.1"}
         stream_obj = {"network": "tcp", "security": "none"}
         upsert_or_reuse_inbound("Hy2-SOCKS5-Bridge", "127.0.0.1", 10855, "socks", settings_obj, stream_obj, inbound_tag_for_relay)
@@ -1713,24 +1832,41 @@ for inb_id, sniff_raw, stream_raw in c.execute("SELECT id, sniffing, stream_sett
             rs['minClientVer'] = '1.0.0'
     c.execute("UPDATE inbounds SET sniffing=?, stream_settings=? WHERE id=?", (json.dumps(sn), json.dumps(st, indent=2), inb_id))
 
-# 处理按入站隔离的专属家宽中转出站 (out-res-<tag>)，并清理已关闭中转的孤儿出站/规则
+# 处理按入站/按用户隔离的家宽/住宅代理中转出站，支持 SS-2022 / SOCKS5 / HTTP
 relay_tag = None
+relay_per_user = False
+relay_valid = enable_relay and res_ip and res_port and (res_proto in ('socks', 'http') or res_ss_pass)
 if inbound_tag_for_relay:
-    cand_relay_tag = f"out-res-{inbound_tag_for_relay}"
-    outbounds = [ob for ob in outbounds if ob.get('tag') != cand_relay_tag]
-    if enable_relay and res_ip and res_port and res_ss_pass:
-        outbounds.append({
-            "tag": cand_relay_tag,
-            "protocol": "shadowsocks",
-            "settings": {
-                "servers": [{
-                    "address": res_ip,
-                    "port": int(res_port),
-                    "method": "2022-blake3-aes-256-gcm",
-                    "password": res_ss_pass
-                }]
-            }
-        })
+    if relay_valid and locals().get('relay_reused_port') and locals().get('relay_new_emails'):
+        cand_relay_tag = f"out-res-u-{port}-{secrets.token_hex(2)}"
+        relay_per_user = True
+    else:
+        cand_relay_tag = f"out-res-{inbound_tag_for_relay}"
+        if not locals().get('relay_reused_port'):
+            outbounds = [ob for ob in outbounds if ob.get('tag') != cand_relay_tag]
+    if relay_valid:
+        if res_proto in ('socks', 'http'):
+            srv_obj = {"address": res_ip, "port": int(res_port)}
+            if res_user:
+                srv_obj["users"] = [{"user": res_user, "pass": res_ss_pass}]
+            outbounds.append({
+                "tag": cand_relay_tag,
+                "protocol": res_proto,
+                "settings": {"servers": [srv_obj]}
+            })
+        else:
+            outbounds.append({
+                "tag": cand_relay_tag,
+                "protocol": "shadowsocks",
+                "settings": {
+                    "servers": [{
+                        "address": res_ip,
+                        "port": int(res_port),
+                        "method": "2022-blake3-aes-256-gcm",
+                        "password": res_ss_pass
+                    }]
+                }
+            })
         relay_tag = cand_relay_tag
 cfg['outbounds'] = outbounds
 valid_out_tags = {ob.get('tag') for ob in outbounds if ob.get('tag')}
@@ -1743,11 +1879,14 @@ custom_rules = [
     and not (r.get('outboundTag') == 'blocked' and r.get('protocol') == ['bittorrent'] and not r.get('ip') and not r.get('domain') and not r.get('port'))
     and not (r.get('outboundTag') == 'blocked' and str(r.get('port', '')) == '25' and not r.get('ip') and not r.get('domain') and not r.get('protocol'))
     and not (r.get('outboundTag') == 'direct' and r.get('domain') == ['geosite:google'] and not r.get('ip') and not r.get('inboundTag') and not r.get('user'))
-    and not (inbound_tag_for_relay and r.get('inboundTag') == [inbound_tag_for_relay] and str(r.get('outboundTag', '')).startswith('out-res'))
+    and not ((not locals().get('relay_reused_port')) and inbound_tag_for_relay and r.get('inboundTag') == [inbound_tag_for_relay] and str(r.get('outboundTag', '')).startswith('out-res'))
     and not (str(r.get('outboundTag', '')).startswith('out-res') and r.get('outboundTag') not in valid_out_tags)
 ]
 if relay_tag and inbound_tag_for_relay:
-    custom_rules.append({'type': 'field', 'inboundTag': [inbound_tag_for_relay], 'outboundTag': relay_tag})
+    if relay_per_user and locals().get('relay_new_emails'):
+        custom_rules.insert(0, {'type': 'field', 'user': locals()['relay_new_emails'], 'outboundTag': relay_tag})
+    else:
+        custom_rules.append({'type': 'field', 'inboundTag': [inbound_tag_for_relay], 'outboundTag': relay_tag})
 
 has_relay_rule = any(str(r.get('outboundTag', '')).startswith('out-res') for r in custom_rules)
 base_rules = [
@@ -1908,6 +2047,48 @@ if [ "$MODE" = "3" ]; then
       mode: 4"
     fi
 
+    HY2_LINKS_FILE="/tmp/hy2_links.txt"
+    rm -f "$HY2_LINKS_FILE"
+    URI_HOST="$SERVER_IP"
+    [[ "$URI_HOST" == *:* && "$URI_HOST" != \[* ]] && URI_HOST="[${URI_HOST}]"
+    HY2_PRE="${NODE_PREFIX:-Hy2-PortHopping}"
+    if [ "${CLIENT_COUNT:-1}" -le 1 ] && [ -z "${CLIENT_REMARKS:-}" ]; then
+        HY2_AUTH_BLOCK="auth:
+  type: password
+  password: \"$(printf '%s' "$HY2_PASS" | sed 's/\\/\\\\/g; s/"/\\"/g')\""
+        HY2_RAND_SUF=$(tr -dc 'a-z' </dev/urandom 2>/dev/null | head -c 8 || echo "default1")
+        HY2_PASS_ENC=$(HY2_PASS="$HY2_PASS" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['HY2_PASS'], safe=''))")
+        HY2_REM_ENC=$(HY2_REM="${HY2_PRE}-${HY2_RAND_SUF}" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['HY2_REM'], safe=''))")
+        HY2_LINK="hysteria2://${HY2_PASS_ENC}@${URI_HOST}:${LISTEN_PORT}?insecure=1&sni=www.bing.com&pinSHA256=${HY2_PIN}&mport=20000-50000#${HY2_REM_ENC}"
+    else
+        HY2_AUTH_BLOCK="auth:
+  type: userpass
+  userpass:"
+        # 保留现有 userpass 中的历史客户（若存在）
+        if [ -f /etc/hysteria/config.yaml ] && grep -q "type: userpass" /etc/hysteria/config.yaml; then
+            OLD_UP=$(awk '/userpass:/{f=1;next} /^[^ ]/{f=0} f && /^    [^ ]+:/{print}' /etc/hysteria/config.yaml || true)
+            [ -n "$OLD_UP" ] && HY2_AUTH_BLOCK="${HY2_AUTH_BLOCK}
+${OLD_UP}"
+        fi
+        IFS=',' read -r -a _HY2_REMS <<< "$(printf '%s' "${CLIENT_REMARKS:-}" | tr '，' ',')"
+        for ((_hi=0; _hi<CLIENT_COUNT; _hi++)); do
+            _hsuf="${_HY2_REMS[$_hi]:-}"
+            _hsuf=$(printf "%s" "$_hsuf" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+            [ -z "$_hsuf" ] && _hsuf=$(tr -dc 'a-z' </dev/urandom 2>/dev/null | head -c 8 || printf "u%02d" "$_hi")
+            _huser="u$(tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c 6 || printf "%04d" "$_hi")"
+            _hpass=$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 20)
+            HY2_AUTH_BLOCK="${HY2_AUTH_BLOCK}
+    ${_huser}: \"${_hpass}\""
+            _hlabel="${HY2_PRE}-${_hsuf}"
+            _hrem_enc=$(HY2_REM="$_hlabel" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['HY2_REM'], safe=''))")
+            _hlink="hysteria2://${_huser}:${_hpass}@${URI_HOST}:${LISTEN_PORT}?insecure=1&sni=www.bing.com&pinSHA256=${HY2_PIN}&mport=20000-50000#${_hrem_enc}"
+            printf "%s|%s\n" "$_hlabel" "$_hlink" >> "$HY2_LINKS_FILE"
+            if [ "$CLIENT_COUNT" -eq 1 ]; then
+                HY2_LINK="$_hlink"
+            fi
+        done
+    fi
+
     (
     umask 077
     cat << EOF > /etc/hysteria/config.yaml
@@ -1925,9 +2106,7 @@ tls:
   sniGuard: disable
   cert: /etc/hysteria/server.crt
   key: /etc/hysteria/server.key
-auth:
-  type: password
-  password: "$(printf '%s' "$HY2_PASS" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+${HY2_AUTH_BLOCK}
 acl:
 ${ACL_GEOIP_LINE}
   inline:
@@ -1972,10 +2151,6 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload && systemctl enable --now hy2-port-hopping.service
     systemctl enable --now hysteria-server && systemctl restart hysteria-server
-    HY2_PASS_ENC=$(HY2_PASS="$HY2_PASS" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['HY2_PASS'], safe=''))")
-    URI_HOST="$SERVER_IP"
-    [[ "$URI_HOST" == *:* && "$URI_HOST" != \[* ]] && URI_HOST="[${URI_HOST}]"
-    HY2_LINK="hysteria2://${HY2_PASS_ENC}@${URI_HOST}:${LISTEN_PORT}?insecure=1&sni=www.bing.com&pinSHA256=${HY2_PIN}&mport=20000-50000#Hy2-PortHopping"
 fi
 
 # 每周日 04:00 平滑重启 x-ui 释放内存缓存
@@ -2032,20 +2207,37 @@ if [ -f /tmp/setup_result.txt ]; then
         grep -E "^SS_(IP|PORT|PASS)=" /tmp/setup_result.txt | sed 's/^/  /'
     elif grep -q "RESULT_TYPE=LINK" /tmp/setup_result.txt; then
         printf "${DIM}------------------------------------------------------------------${R}\n"
-        printf "  ${GREEN}【客户端导入链接】${R}${DIM}（请先关掉客户端顶部总开关再测速！）：${R}\n"
-        SHARE_URL=$(grep "^SHARE_LINK=" /tmp/setup_result.txt | cut -d'=' -f2- || true)
-        printf "  ${WHITE}%s${R}\n" "${SHARE_URL}"
-        if command -v qrencode >/dev/null 2>&1 && [ -n "$SHARE_URL" ]; then
-            printf "  ${CYAN}【手机扫码导入（Shadowrocket / v2rayNG / Stash）】：${R}\n"
-            qrencode -t ANSIUTF8 -m 1 "$SHARE_URL" || true
-        fi
-        if [ "$MODE" = "2" ] && [ -n "$SHARE_URL" ]; then
-            CF_OPT_URL="$(printf '%s' "$SHARE_URL" | sed -E "s|@[^:]+:|@${CF_OPT_HOST}:|")-CF%E4%BC%98%E9%80%89"
-            printf "\n  ${YELLOW}【CF 优选加速链接（入口: %s，防国内默认免费段超时，直接扫这个更快更稳）】：${R}\n" "${CF_OPT_HOST}"
-            printf "  ${GREEN}%s${R}\n" "${CF_OPT_URL}"
-            if command -v qrencode >/dev/null 2>&1; then
-                qrencode -t ANSIUTF8 -m 1 "$CF_OPT_URL" || true
+        LINK_COUNT=$(grep -c "^SHARE_LINK_ITEM=" /tmp/setup_result.txt 2>/dev/null || echo 0)
+        if [ "$LINK_COUNT" -le 1 ]; then
+            printf "  ${GREEN}【客户端导入链接】${R}${DIM}（请先关掉客户端顶部总开关再测速！）：${R}\n"
+            SHARE_URL=$(grep "^SHARE_LINK=" /tmp/setup_result.txt | cut -d'=' -f2- || true)
+            [ -z "$SHARE_URL" ] && SHARE_URL=$(grep "^SHARE_LINK_ITEM=" /tmp/setup_result.txt | head -n 1 | cut -d'|' -f2- || true)
+            printf "  ${WHITE}%s${R}\n" "${SHARE_URL}"
+            if command -v qrencode >/dev/null 2>&1 && [ -n "$SHARE_URL" ]; then
+                printf "  ${CYAN}【手机扫码导入（Shadowrocket / v2rayNG / Stash）】：${R}\n"
+                qrencode -t ANSIUTF8 -m 1 "$SHARE_URL" || true
             fi
+            if [ "$MODE" = "2" ] && [ -n "$SHARE_URL" ]; then
+                CF_OPT_URL="$(printf '%s' "$SHARE_URL" | sed -E "s|@[^:]+:|@${CF_OPT_HOST}:|")-CF%E4%BC%98%E9%80%89"
+                printf "\n  ${YELLOW}【CF 优选加速链接（入口: %s，防国内默认免费段超时，直接扫这个更快更稳）】：${R}\n" "${CF_OPT_HOST}"
+                printf "  ${GREEN}%s${R}\n" "${CF_OPT_URL}"
+                if command -v qrencode >/dev/null 2>&1; then
+                    qrencode -t ANSIUTF8 -m 1 "$CF_OPT_URL" || true
+                fi
+            fi
+        else
+            printf "  ${GREEN}【本次批量生成 %s 个客户链接】${R}${DIM}（已自动追加至端口 %s，不覆盖原客户）：${R}\n" "${LINK_COUNT}" "${LISTEN_PORT}"
+            IDX_L=0
+            while IFS='|' read -r _em _url; do
+                _em="${_em#SHARE_LINK_ITEM=}"
+                [ -z "$_url" ] && continue
+                IDX_L=$((IDX_L + 1))
+                printf "  ${CYAN}[%d] %s${R}\n  ${WHITE}%s${R}\n" "$IDX_L" "$_em" "$_url"
+                if [ "$MODE" = "2" ]; then
+                    _opt_url="$(printf '%s' "$_url" | sed -E "s|@[^:]+:|@${CF_OPT_HOST}:|")-CF%E4%BC%98%E9%80%89"
+                    printf "  ${GREEN}[%d-CF优选] %s${R}\n" "$IDX_L" "$_opt_url"
+                fi
+            done < <(grep "^SHARE_LINK_ITEM=" /tmp/setup_result.txt)
         fi
     fi
     rm -f /tmp/setup_result.txt
@@ -2060,7 +2252,18 @@ if [ "$MODE" = "2" ]; then
     printf "     ${WHITE}仅把「地址(Address)」改为 CF 优选域名（如 www.visa.com.hk）或优选 IP${R}，\n"
     printf "     ${WHITE}Host 与 SNI 保持 %s 不变${R}；测试前请${ORANGE}先关掉客户端总开关并用 4G/5G 测速${R}！\n" "${CF_DOMAIN}"
 fi
-if [ -n "$HY2_LINK" ]; then
+if [ -f /tmp/hy2_links.txt ] && [ "${CLIENT_COUNT:-1}" -gt 1 ]; then
+    printf "${DIM}------------------------------------------------------------------${R}\n"
+    printf "  ${PINK}【本次批量生成 %s 个 Hysteria 2 客户链接】：${R}\n" "${CLIENT_COUNT}"
+    IDX_H=0
+    while IFS='|' read -r _hl _hu; do
+        [ -z "$_hu" ] && continue
+        IDX_H=$((IDX_H + 1))
+        printf "  ${CYAN}[%d] %s${R}\n  ${WHITE}%s${R}\n" "$IDX_H" "$_hl" "$_hu"
+    done < /tmp/hy2_links.txt
+    rm -f /tmp/hy2_links.txt
+elif [ -n "$HY2_LINK" ]; then
+    rm -f /tmp/hy2_links.txt
     printf "${DIM}------------------------------------------------------------------${R}\n"
     printf "  ${PINK}【Hysteria 2 导入链接】：${R}\n"
     printf "  ${WHITE}%s${R}\n" "${HY2_LINK}"
