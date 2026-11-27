@@ -52,6 +52,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 
 ![第 1 步：运行 setup.sh 按 3 下键示意图](docs/images/guide_step2_install.png)
 
+> **真实终端交互实拍（已在 Debian 12 实机跑通，IP 已脱敏）**：
+>
+> ![实机运行 setup.sh 交互选择截图](docs/images/real_shot1_interactive.png)
+
 等待约 30 秒 ~ 1 分钟，脚本会自动装好底层 BBR 内核调优、Xray 与 3x-ui 面板。
 
 ---
@@ -61,6 +65,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 跑完之后，屏幕上会清晰列出 **3 块核心信息**，对照下图看：
 
 ![第 2 步：安装完成后的 3 个必看区域](docs/images/guide_step3_output.png)
+
+> **真实部署完成界面 & 二维码实拍（IP 与账密已脱敏）**：
+>
+> ![实机部署完成与 3x-ui SSH 隧道指引截图](docs/images/real_shot2_complete.png)
+>
+> ![实机终端打印可直接扫码的二维码截图](docs/images/real_shot3_qr.png)
 
 - **区域 A（直接上网）**：拿出手机打开代理软件，直接扫描终端里打印出来的二维码（或复制那条 `vless://...` 链接导入），**到这一步就已经能直接连上外网了！**
   - **iOS（苹果）**：Shadowrocket（小火箭）-> 点左上角扫码图标
