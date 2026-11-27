@@ -1291,11 +1291,19 @@ if [ -f /tmp/pure_result.txt ]; then
         [ -n "$SHARE_URL" ] && echo "  分享链接: ${SHARE_URL}"
     elif [ -n "$SHARE_URL" ]; then
         echo "------------------------------------------------------------------"
-        echo "  【客户端导入链接】："
-        echo "  ${SHARE_URL}"
+        printf "  ${GREEN}【客户端导入链接】${R}${DIM}（请先关掉客户端顶部总开关再测速！）：${R}\n"
+        printf "  ${WHITE}%s${R}\n" "${SHARE_URL}"
         if command -v qrencode >/dev/null 2>&1; then
-            echo "  【手机扫码导入（Shadowrocket / v2rayNG / Stash）】："
+            printf "  ${CYAN}【手机扫码导入（Shadowrocket / v2rayNG / Stash）】：${R}\n"
             qrencode -t ANSIUTF8 -m 1 "$SHARE_URL" || true
+        fi
+        if [ "$MODE" = "2" ]; then
+            CF_OPT_URL="$(printf '%s' "$SHARE_URL" | sed -E 's/@[^:]+:/@www.visa.com.hk:/')-CF%E4%BC%98%E9%80%89"
+            printf "\n  ${YELLOW}【CF 优选加速链接（防国内默认免费段超时，直接扫这个更快更稳）】：${R}\n"
+            printf "  ${GREEN}%s${R}\n" "${CF_OPT_URL}"
+            if command -v qrencode >/dev/null 2>&1; then
+                qrencode -t ANSIUTF8 -m 1 "$CF_OPT_URL" || true
+            fi
         fi
     fi
     rm -f /tmp/pure_result.txt

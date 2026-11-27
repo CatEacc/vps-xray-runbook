@@ -782,6 +782,9 @@ if os.path.exists(db_path):
                         link = f"vless://{u}@{sni}:{port}?type={net}&path={path}&host={sni}&security=tls&sni={sni}&fp=chrome#{r_enc}"
                     print(f"  [{label}] {link}")
                     print_qr(link)
+                    if port in (443, 2053, 2083, 2087, 2096, 8443) and sni and sni != server_ip:
+                        opt_link = link.replace(f"@{sni}:{port}?", f"@www.visa.com.hk:{port}?", 1) + "-CF%E4%BC%98%E9%80%89"
+                        print(f"  [{label}-CF优选] {opt_link}")
                     found += 1
         elif proto == 'shadowsocks':
             method = s.get('method', '')
@@ -1978,6 +1981,14 @@ if [ -f /tmp/setup_result.txt ]; then
         if command -v qrencode >/dev/null 2>&1 && [ -n "$SHARE_URL" ]; then
             printf "  ${CYAN}【手机扫码导入（Shadowrocket / v2rayNG / Stash）】：${R}\n"
             qrencode -t ANSIUTF8 -m 1 "$SHARE_URL" || true
+        fi
+        if [ "$MODE" = "2" ] && [ -n "$SHARE_URL" ]; then
+            CF_OPT_URL="$(printf '%s' "$SHARE_URL" | sed -E 's/@[^:]+:/@www.visa.com.hk:/')-CF%E4%BC%98%E9%80%89"
+            printf "\n  ${YELLOW}【CF 优选加速链接（防国内默认免费段超时，直接扫这个更快更稳）】：${R}\n"
+            printf "  ${GREEN}%s${R}\n" "${CF_OPT_URL}"
+            if command -v qrencode >/dev/null 2>&1; then
+                qrencode -t ANSIUTF8 -m 1 "$CF_OPT_URL" || true
+            fi
         fi
     fi
     rm -f /tmp/setup_result.txt
