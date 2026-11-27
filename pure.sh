@@ -124,6 +124,7 @@ SUBMODE="1"          # 1=XHTTP+REALITY, 2=raw+Vision+REALITY, 3=家宽SS-2022落
 REALITY_SNI="addons.mozilla.org"
 ENABLE_MLDSA65="n"
 CF_DOMAIN="cf.example.com"
+CF_OPT_HOST="www.visa.com.hk"
 ENABLE_RELAY="n"
 RES_IP=""
 RES_PORT=""
@@ -560,6 +561,36 @@ case "$MODE" in
             echo "[错误] Cloudflare 域名格式非法: ${CF_DOMAIN}"
             exit 1
         fi
+        printf "\n  ${CYAN}─── 请选择 Cloudflare 优选入口地址（生成免手动修改的加速链接） ───${R}\n"
+        printf "  ${GREEN}[1]${R} ${WHITE}www.visa.com.hk${R}        ${CYAN}★ 推荐 · 104.18.21.* 企业级段（三网实测可用）${R}\n"
+        printf "  ${GREEN}[2]${R} ${WHITE}www.visa.co.jp${R}         ${DIM}（104.18.10.* 企业级段）${R}\n"
+        printf "  ${GREEN}[3]${R} ${WHITE}www.visa.com.sg${R}        ${DIM}（104.18.12.* 企业级段）${R}\n"
+        printf "  ${GREEN}[4]${R} ${WHITE}www.visa.com${R}           ${DIM}（104.18.14.* 企业级段）${R}\n"
+        printf "  ${GREEN}[5]${R} ${WHITE}www.udacity.com${R}        ${DIM}（172.64.145.* 独立企业段 · 备选分流）${R}\n"
+        printf "  ${GREEN}[6]${R} ${WHITE}手动输入自定义优选域名 / 优选 IP${R} ${DIM}（支持填 CloudflareST 自测优选 IP）${R}\n"
+        read -rp "$(printf "  ${YELLOW}请选择优选入口 [1-6] (回车默认 1): ${R}")" CF_OPT_PICK || CF_OPT_PICK="1"
+        case "${CF_OPT_PICK:-1}" in
+            1) CF_OPT_HOST="www.visa.com.hk" ;;
+            2) CF_OPT_HOST="www.visa.co.jp" ;;
+            3) CF_OPT_HOST="www.visa.com.sg" ;;
+            4) CF_OPT_HOST="www.visa.com" ;;
+            5) CF_OPT_HOST="www.udacity.com" ;;
+            6)
+                read -rp "$(printf "  ${YELLOW}-> 请输入自定义 CF 优选域名或 IP: ${R}")" CF_OPT_IN || CF_OPT_IN=""
+                CF_OPT_IN=$(printf "%s" "$CF_OPT_IN" | sed -E 's#^https?://##; s#/.*$##' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                if [[ "$CF_OPT_IN" == *:* && "$CF_OPT_IN" != \[* ]]; then
+                    CF_OPT_IN="[${CF_OPT_IN}]"
+                fi
+                if [[ "$CF_OPT_IN" =~ ^[a-z0-9.\[\]:-]+$ ]] && [ -n "$CF_OPT_IN" ]; then
+                    CF_OPT_HOST="$CF_OPT_IN"
+                else
+                    printf "  ${ORANGE}-> [提示] 输入格式无效，已回退默认优选入口 www.visa.com.hk${R}\n"
+                    CF_OPT_HOST="www.visa.com.hk"
+                fi
+                ;;
+            *) CF_OPT_HOST="www.visa.com.hk" ;;
+        esac
+        printf "  ${GREEN}-> 已选定 CF 优选入口:${R} ${WHITE}%s${R} ${DIM}(Host/SNI 保持 %s 不变)${R}\n" "$CF_OPT_HOST" "$CF_DOMAIN"
         prompt_relay_ss
         ;;
     3)
@@ -1298,8 +1329,8 @@ if [ -f /tmp/pure_result.txt ]; then
             qrencode -t ANSIUTF8 -m 1 "$SHARE_URL" || true
         fi
         if [ "$MODE" = "2" ]; then
-            CF_OPT_URL="$(printf '%s' "$SHARE_URL" | sed -E 's/@[^:]+:/@www.visa.com.hk:/')-CF%E4%BC%98%E9%80%89"
-            printf "\n  ${YELLOW}【CF 优选加速链接（防国内默认免费段超时，直接扫这个更快更稳）】：${R}\n"
+            CF_OPT_URL="$(printf '%s' "$SHARE_URL" | sed -E "s|@[^:]+:|@${CF_OPT_HOST}:|")-CF%E4%BC%98%E9%80%89"
+            printf "\n  ${YELLOW}【CF 优选加速链接（入口: %s，防国内默认免费段超时，直接扫这个更快更稳）】：${R}\n" "${CF_OPT_HOST}"
             printf "  ${GREEN}%s${R}\n" "${CF_OPT_URL}"
             if command -v qrencode >/dev/null 2>&1; then
                 qrencode -t ANSIUTF8 -m 1 "$CF_OPT_URL" || true
