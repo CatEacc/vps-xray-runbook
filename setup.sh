@@ -776,7 +776,7 @@ if os.path.exists(db_path):
                         xh = st.get('xhttpSettings', {})
                         path = urllib.parse.quote(xh.get('path', '/vless-xhttp'), safe='')
                         xmode = xh.get('mode', 'packet-up')
-                        link = f"vless://{u}@{sni}:{port}?type=xhttp&path={path}&mode={xmode}&host={sni}&security=tls&sni={sni}&fp=chrome#{r_enc}"
+                        link = f"vless://{u}@{sni}:{port}?type=xhttp&path={path}&mode={xmode}&host={sni}&security=tls&sni={sni}&alpn=h2&fp=chrome#{r_enc}"
                     else:
                         path = urllib.parse.quote(st.get('wsSettings', {}).get('path', '/'), safe='')
                         link = f"vless://{u}@{sni}:{port}?type={net}&path={path}&host={sni}&security=tls&sni={sni}&fp=chrome#{r_enc}"
@@ -1406,6 +1406,8 @@ if mode in ('1', '2'):
 # 1. 基础模板与安全路由
 row = c.execute("SELECT value FROM settings WHERE key='xrayTemplateConfig'").fetchone()
 cfg = json.loads(row[0]) if (row and row[0]) else {}
+cfg['api'] = {"tag": "api", "services": ["HandlerService", "LoggerService", "StatsService"]}
+cfg['stats'] = {}
 cfg['log'] = {"access": "none", "dnsLog": False, "error": "", "loglevel": "warning", "maskAddress": ""}
 cfg['inbounds'] = [{
     "listen": "127.0.0.1", "port": 62789, "protocol": "dokodemo-door",
@@ -1543,7 +1545,7 @@ def build_link_from_row(rem, in_port, proto, s_str, st_str):
                 xh = st.get('xhttpSettings', {})
                 p_enc = urllib.parse.quote(xh.get('path', '/vless-xhttp'), safe='')
                 xm = xh.get('mode', 'packet-up')
-                return 'LINK', f"vless://{u}@{host_v}:{in_port}?type=xhttp&path={p_enc}&mode={xm}&host={host_v}&security=tls&sni={host_v}&fp=chrome#{r_enc}"
+                return 'LINK', f"vless://{u}@{host_v}:{in_port}?type=xhttp&path={p_enc}&mode={xm}&host={host_v}&security=tls&sni={host_v}&alpn=h2&fp=chrome#{r_enc}"
             p_enc = urllib.parse.quote(st.get('wsSettings', {}).get('path', '/'), safe='')
             return 'LINK', f"vless://{u}@{host_v}:{in_port}?type={net}&path={p_enc}&host={host_v}&security=tls&sni={host_v}&fp=chrome#{r_enc}"
     return '', ''
@@ -1620,7 +1622,7 @@ elif mode == '2':
         "network": "xhttp", "security": "tls", "externalProxy": [],
         "tlsSettings": {
             "serverName": cf_domain, "minVersion": "1.2", "maxVersion": "1.3",
-            "certificates": [{"certificateFile": "/etc/x-ui/cf.crt", "keyFile": "/etc/x-ui/cf.key", "ocspStapling": 3600}],
+            "certificates": [{"certificateFile": "/etc/x-ui/cf.crt", "keyFile": "/etc/x-ui/cf.key", "ocspStapling": 0}],
             "alpn": ["h2", "http/1.1"]
         },
         "xhttpSettings": {"path": "/vless-xhttp", "mode": "packet-up"},

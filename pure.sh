@@ -1143,7 +1143,7 @@ elif mode == "2":
         "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
     })
     meta[tag] = {"host": cf_domain}
-    share_link = f"vless://{uid}@{cf_domain}:{port}?type=xhttp&path=%2Fvless-xhttp&mode=packet-up&encryption=none&security=tls&sni={cf_domain}&host={cf_domain}&fp=chrome#{urllib.parse.quote(tag)}"
+    share_link = f"vless://{uid}@{cf_domain}:{port}?type=xhttp&path=%2Fvless-xhttp&mode=packet-up&encryption=none&security=tls&sni={cf_domain}&host={cf_domain}&alpn=h2&fp=chrome#{urllib.parse.quote(tag)}"
     print("RESULT_TYPE=LINK")
 
 stale_in_tags = removed_tags | {tag}
