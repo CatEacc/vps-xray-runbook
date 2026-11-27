@@ -134,7 +134,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 
 | 遇到的问题 | 最可能原因 | 10 秒解决办法 |
 | :--- | :--- | :--- |
-| **SSH 连不上，报 `Connection timed out` 或 `Connection closed by ... port 22`** | IP 被墙 / 输错密码太多次被 `fail2ban` 封 IP / 电脑梯子连着自己 VPS 套娃 / 安全组没放行 | 先关掉电脑梯子或换个其他节点，或连手机热点换个 IP 再试；去 `ping.pe` 测 `IP:22`（海外绿国内红就挂代理连） |
+| **SSH / FinalShell 连不上，报 `Connection timed out` 或 `Connection closed by ... port 22`** | IP 被墙 / 输错密码太多次触发 `fail2ban` 封了自己家里 IP（同一电脑终端和 FinalShell 会一起被拦）/ 梯子套娃 / 安全组没放行 | 先关掉电脑梯子或连**手机 4G/5G 热点**换个 IP 试连；连上（或进商家后台 VNC）后运行 `fail2ban-client unban --all` 即可一键解封家里 IP；若 `ping.pe` 海外绿国内红则挂代理连 |
 | **直连 VLESS REALITY 晚高峰很卡、丢包严重** | 廉价普通机房（如 RackNerd）没有中国大陆回国优化线路，属于线路问题而非脚本问题 | 改用模式 **`[2]` Cloudflare CDN 优选**（自带实测企业级入口）或模式 **`[3]` Hysteria 2** |
 | **节点测速超时、完全连不上** | 云厂商安全组没放行 `443`（或你选的端口）/ 节点地址误填了 `localhost` | 检查 AWS/阿里云/甲骨文后台安全组放行对应 TCP 端口；检查客户端里服务器地址是不是 VPS 真实公网 IP |
 | **测速有延迟，但所有网页都打不开** | CF 端口改成了非白名单端口 / CF SSL 模式没选 `Full` / 换优选时把 SNI 也改了 | 端口改回 `2053` 或 `443`；CF 后台 SSL 选 `Full`；客户端确认 SNI 和 Host 填的是你自己的域名 |
