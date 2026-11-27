@@ -8,6 +8,7 @@
 [![Telegram](https://img.shields.io/badge/Telegram-%E7%8C%ABe%2Facc-26A5E4?logo=telegram)](https://t.me/CatCryptoMaster)
 
 > **仓库地址**：`github.com/CatEacc/vps-xray-runbook`  
+> **纯小白保姆图文教程**：[**零基础 5 分钟照图点就能连上（含 SSH 登录 / 扫码 / 3x-ui 隧道 / CF 优选 / 报错对照表）-> 点这里看**](BEGINNER_GUIDE.md)  
 > **定位说明**：本手册采用 `3x-ui` 兼顾可视化管理与生产级安全加固；文中所有 Linux 内核栈参数、Xray 路由模板、REALITY / XHTTP 规范与家宽加固脚本，均与纯 `Xray-core` JSON 部署完全通用。
 
 ---
