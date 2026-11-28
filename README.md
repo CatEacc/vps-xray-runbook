@@ -1,14 +1,33 @@
-# 生产级 VPS 部署与调优实战手册（Xray v26.11.9 / 3x-ui v3.11.0）
+<div align="center">
 
-[![Xray-core](https://img.shields.io/badge/Xray--core-v26.11.9-blue)](https://github.com/XTLS/Xray-core/releases)
-[![3x-ui](https://img.shields.io/badge/3x--ui-v3.11.0-green)](https://github.com/MHSanaei/3x-ui/releases)
+<img src="xray_banner.svg" alt="CatEacc vps-xray-runbook Banner" width="100%" />
+
+<br />
+
+[![Release](https://img.shields.io/github/v/release/CatEacc/vps-xray-runbook?style=flat-square&color=10b981&label=Release)](https://github.com/CatEacc/vps-xray-runbook/releases)
+[![Stars](https://img.shields.io/github/stars/CatEacc/vps-xray-runbook?style=flat-square&color=06b6d4&label=Stars)](https://github.com/CatEacc/vps-xray-runbook/stargazers)
+[![Xray-core](https://img.shields.io/badge/Xray--core-v26.11.9-3b82f6?style=flat-square)](https://github.com/XTLS/Xray-core/releases)
+[![3x-ui](https://img.shields.io/badge/3x--ui-v3.11.0-10b981?style=flat-square)](https://github.com/MHSanaei/3x-ui/releases)
 [![CI Check](https://github.com/CatEacc/vps-xray-runbook/actions/workflows/ci.yml/badge.svg)](https://github.com/CatEacc/vps-xray-runbook/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Telegram](https://img.shields.io/badge/Telegram-%E7%8C%ABe%2Facc-26A5E4?logo=telegram)](https://t.me/CatCryptoMaster)
+[![License: MIT](https://img.shields.io/badge/License-MIT-f59e0b?style=flat-square)](LICENSE)
+[![Telegram](https://img.shields.io/badge/Telegram-%E7%8C%ABe%2Facc-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://t.me/CatCryptoMaster)
 
-> **仓库地址**：`github.com/CatEacc/vps-xray-runbook`  
-> **纯小白保姆图文教程**：[**零基础 5 分钟照图点就能连上（含 SSH 登录 / 扫码 / 3x-ui 隧道 / CF 优选 / 报错对照表）-> 点这里看**](BEGINNER_GUIDE.md)  
-> **定位说明**：本手册采用 `3x-ui` 兼顾可视化管理与生产级安全加固；文中所有 Linux 内核栈参数、Xray 路由模板、REALITY / XHTTP 规范与家宽加固脚本，均与纯 `Xray-core` JSON 部署完全通用。
+<p>
+  <a href="#小白一键执行提供3x-ui-面板版与无面板纯手搓-json-版双脚本"><b>一键脚本</b></a> ·
+  <a href="BEGINNER_GUIDE.md"><b>纯小白 5 分钟图文保姆教程</b></a> ·
+  <a href="#避坑对照为什么不建议照搬网上野生教程--模板"><b>避坑对照</b></a> ·
+  <a href="https://github.com/CatEacc/vps-singbox-runbook">sing-box 版</a> ·
+  <a href="https://github.com/CatEacc/vps-clash-runbook">Clash 客户端</a> ·
+  <a href="https://github.com/CatEacc/vps-linux-tuning">Linux 内核调优</a>
+</p>
+
+<sub><b>生产级 Xray-core & 3x-ui 一键部署与底层调优套件</b> — 提供 <code>setup.sh</code>（3x-ui 可视化面板）与 <code>pure.sh</code>（无面板纯 JSON · 兼容 Debian/Ubuntu 与 Alpine OpenRC）双脚本；支持同端口 1-50 多客户、第三方 SOCKS5/HTTP 住宅代理按用户分流、9 大地区非 CF SNI 四重体检、REALITY 防偷回落、CF 实测优选、Hy2 <code>pinSHA256</code> 与 Clash/Mihomo YAML 导出</sub>
+
+</div>
+
+> - **纯开源零遥测承诺**：100% 明文 Shell + Python 源码可审计，不拉取任何第三方闭源面板/二进制；密码与密钥均在本机随机生成，不留明文密码文件，面板默认锁死 `127.0.0.1` 仅允许 SSH 隧道访问。
+> - **新手零基础直达**：[**纯小白 5 分钟图文保姆教程（含 8 张步骤图 / SSH 登录 / 扫码 / 3x-ui 隧道 / CF 优选 / 报错对照表）-> 点这里看**](BEGINNER_GUIDE.md)
+> - **双层安全基线**：默认主机 `nftables` + 代理路由双层封禁出站 `TCP 25`（防发信拖黑 IP），内置按物理内存三档自适应防 OOM 缓冲、BBR + FQ 与 LXC/Docker 容器兼容容错。
 
 ---
 
