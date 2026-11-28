@@ -858,6 +858,10 @@ if os.path.exists(db_path):
                         fl = f"&flow={flow}" if flow else ""
                         link = f"vless://{u}@{uri_ip}:{port}?type=tcp&security=reality&pbk={pbk}&fp=chrome&sni={sni}&sid={sid}&spx=%2F{fl}{pq_str}#{r_enc}"
                     print(f"  [{label}] {link}")
+                    if net != 'xhttp':
+                        safe_lb = (label or f'VLESS-{port}').replace('"', '\\"')
+                        fl_y = f", flow: {flow}" if flow else ""
+                        print(f'    [Clash/Mihomo] - {{name: "{safe_lb}", type: vless, server: "{server_ip}", port: {port}, uuid: "{u}", udp: true, tls: true{fl_y}, servername: "{sni}", reality-opts: {{public-key: "{pbk}", short-id: "{sid}"}}, client-fingerprint: chrome}}')
                     print_qr(link)
                     found += 1
                 elif sec == 'tls':
@@ -882,6 +886,8 @@ if os.path.exists(db_path):
             if method and pwd:
                 cred = base64.urlsafe_b64encode(f"{method}:{pwd}".encode()).decode().rstrip('=')
                 print(f"  [{remark}] ss://{cred}@{uri_ip}:{port}#{urllib.parse.quote(remark or f'SS-{port}')}")
+                safe_rk = (remark or f'SS-{port}').replace('"', '\\"')
+                print(f'    [Clash/Mihomo] - {{name: "{safe_rk}", type: ss, server: "{server_ip}", port: {port}, cipher: "{method}", password: "{pwd}", udp: true}}')
                 print(f"    (家宽中转参数: IP={server_ip} | PORT={port} | PASS={pwd})")
                 found += 1
 
@@ -912,8 +918,12 @@ if os.path.exists('/etc/hysteria/config.yaml'):
         except Exception:
             pass
     if hy_pass:
-        hy_url = f"hysteria2://{urllib.parse.quote(hy_pass, safe='')}@{uri_ip}:{hy_port}?insecure=1&sni=www.bing.com&pinSHA256={pin}&mport=20000-50000#Hysteria2-PortHopping"
+        insec = '0' if pin else '1'
+        hy_url = f"hysteria2://{urllib.parse.quote(hy_pass, safe='')}@{uri_ip}:{hy_port}?insecure={insec}&sni=www.bing.com&pinSHA256={pin}&mport=20000-50000#Hysteria2-PortHopping"
         print(f"  [Hysteria2] {hy_url}")
+        scv = 'false' if pin else 'true'
+        fp_part = f', fingerprint: "{pin}"' if pin else ''
+        print(f'    [Clash/Mihomo] - {{name: "Hysteria2-PortHopping", type: hysteria2, server: "{server_ip}", port: {hy_port}, password: "{hy_pass}", ports: "20000-50000", sni: "www.bing.com"{fp_part}, skip-cert-verify: {scv}}}')
         print_qr(hy_url)
         found += 1
 
@@ -1724,6 +1734,7 @@ if mode == '1' and submode == '3':
     print(f"SS_IP={server_ip}")
     print(f"SS_PORT={port}")
     print(f"SS_PASS={real_pass}")
+    print(f'CLASH_YAML_ITEM=Residential-SS2022|- {{name: "Residential-SS2022", type: ss, server: "{server_ip}", port: {port}, cipher: "2022-blake3-aes-256-gcm", password: "{real_pass}", udp: true}}')
 
 elif mode == '1':
     out = subprocess.check_output([xray_bin, 'x25519'], text=True)
@@ -1766,9 +1777,18 @@ elif mode == '1':
     if reused:
         print("REUSED_EXISTING=1")
     print("RESULT_TYPE=LINK")
+    _st_act = json.loads(st_raw or '{}')
+    _rs_act = _st_act.get('realitySettings', {})
+    _pbk_act = _rs_act.get('settings', {}).get('publicKey', pub)
+    _sni_act = (_rs_act.get('serverNames') or [sni])[0]
+    _sid_act = (_rs_act.get('shortIds') or [sid])[0]
     for idx_c, cl in enumerate(batch_cls):
         _, cl_link = build_link_from_row(rem_actual, port, proto_actual, s_raw, st_raw, client_override=cl)
         print(f"SHARE_LINK_ITEM={cl['email']}|{cl_link}")
+        if _st_act.get('network', net) != 'xhttp':
+            safe_em = cl['email'].replace('"', '\\"')
+            fl_y = f", flow: {cl.get('flow')}" if cl.get('flow') else ""
+            print(f'CLASH_YAML_ITEM={cl["email"]}|- {{name: "{safe_em}", type: vless, server: "{server_ip}", port: {port}, uuid: "{cl["id"]}", udp: true, tls: true{fl_y}, servername: "{_sni_act}", reality-opts: {{public-key: "{_pbk_act}", short-id: "{_sid_act}"}}, client-fingerprint: chrome}}')
         if idx_c == 0 and len(batch_cls) == 1:
             print(f"SHARE_LINK={cl_link}")
 
@@ -2048,10 +2068,17 @@ if [ "$MODE" = "3" ]; then
     fi
 
     HY2_LINKS_FILE="/tmp/hy2_links.txt"
-    rm -f "$HY2_LINKS_FILE"
+    HY2_CLASH_FILE="/tmp/hy2_clash.txt"
+    rm -f "$HY2_LINKS_FILE" "$HY2_CLASH_FILE"
     URI_HOST="$SERVER_IP"
     [[ "$URI_HOST" == *:* && "$URI_HOST" != \[* ]] && URI_HOST="[${URI_HOST}]"
     HY2_PRE="${NODE_PREFIX:-Hy2-PortHopping}"
+    HY2_INSEC="0"
+    HY2_SCV="false"
+    if [ -z "$HY2_PIN" ]; then
+        HY2_INSEC="1"
+        HY2_SCV="true"
+    fi
     if [ "${CLIENT_COUNT:-1}" -le 1 ] && [ -z "${CLIENT_REMARKS:-}" ]; then
         HY2_AUTH_BLOCK="auth:
   type: password
@@ -2059,7 +2086,8 @@ if [ "$MODE" = "3" ]; then
         HY2_RAND_SUF=$(tr -dc 'a-z' </dev/urandom 2>/dev/null | head -c 8 || echo "default1")
         HY2_PASS_ENC=$(HY2_PASS="$HY2_PASS" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['HY2_PASS'], safe=''))")
         HY2_REM_ENC=$(HY2_REM="${HY2_PRE}-${HY2_RAND_SUF}" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['HY2_REM'], safe=''))")
-        HY2_LINK="hysteria2://${HY2_PASS_ENC}@${URI_HOST}:${LISTEN_PORT}?insecure=1&sni=www.bing.com&pinSHA256=${HY2_PIN}&mport=20000-50000#${HY2_REM_ENC}"
+        HY2_LINK="hysteria2://${HY2_PASS_ENC}@${URI_HOST}:${LISTEN_PORT}?insecure=${HY2_INSEC}&sni=www.bing.com&pinSHA256=${HY2_PIN}&mport=20000-50000#${HY2_REM_ENC}"
+        printf '%s\n' "- {name: \"${HY2_PRE}-${HY2_RAND_SUF}\", type: hysteria2, server: \"${SERVER_IP}\", port: ${LISTEN_PORT}, password: \"${HY2_PASS}\", ports: \"20000-50000\", sni: \"www.bing.com\", fingerprint: \"${HY2_PIN}\", skip-cert-verify: ${HY2_SCV}}" >> "$HY2_CLASH_FILE"
     else
         HY2_AUTH_BLOCK="auth:
   type: userpass
@@ -2081,8 +2109,9 @@ ${OLD_UP}"
     ${_huser}: \"${_hpass}\""
             _hlabel="${HY2_PRE}-${_hsuf}"
             _hrem_enc=$(HY2_REM="$_hlabel" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['HY2_REM'], safe=''))")
-            _hlink="hysteria2://${_huser}:${_hpass}@${URI_HOST}:${LISTEN_PORT}?insecure=1&sni=www.bing.com&pinSHA256=${HY2_PIN}&mport=20000-50000#${_hrem_enc}"
+            _hlink="hysteria2://${_huser}:${_hpass}@${URI_HOST}:${LISTEN_PORT}?insecure=${HY2_INSEC}&sni=www.bing.com&pinSHA256=${HY2_PIN}&mport=20000-50000#${_hrem_enc}"
             printf "%s|%s\n" "$_hlabel" "$_hlink" >> "$HY2_LINKS_FILE"
+            printf '%s\n' "- {name: \"${_hlabel}\", type: hysteria2, server: \"${SERVER_IP}\", port: ${LISTEN_PORT}, password: \"${_huser}:${_hpass}\", ports: \"20000-50000\", sni: \"www.bing.com\", fingerprint: \"${HY2_PIN}\", skip-cert-verify: ${HY2_SCV}}" >> "$HY2_CLASH_FILE"
             if [ "$CLIENT_COUNT" -eq 1 ]; then
                 HY2_LINK="$_hlink"
             fi
@@ -2240,6 +2269,13 @@ if [ -f /tmp/setup_result.txt ]; then
             done < <(grep "^SHARE_LINK_ITEM=" /tmp/setup_result.txt)
         fi
     fi
+    if grep -q "^CLASH_YAML_ITEM=" /tmp/setup_result.txt; then
+        printf "\n  ${CYAN}【Clash / Mihomo 节点配置（直接复制贴入 proxies，可搭配 vps-clash-runbook 零泄露分流）】：${R}\n"
+        while IFS='|' read -r _cem _cy; do
+            [ -z "$_cy" ] && continue
+            printf "  ${WHITE}%s${R}\n" "$_cy"
+        done < <(grep "^CLASH_YAML_ITEM=" /tmp/setup_result.txt)
+    fi
     rm -f /tmp/setup_result.txt
 fi
 if [ "$MODE" = "2" ]; then
@@ -2271,6 +2307,14 @@ elif [ -n "$HY2_LINK" ]; then
         printf "  ${CYAN}【手机扫码导入（Shadowrocket / v2rayNG / Stash）】：${R}\n"
         qrencode -t ANSIUTF8 -m 1 "$HY2_LINK" || true
     fi
+fi
+if [ -f /tmp/hy2_clash.txt ]; then
+    printf "\n  ${CYAN}【Clash / Mihomo 节点配置（直接复制贴入 proxies，可搭配 vps-clash-runbook 零泄露分流）】：${R}\n"
+    while IFS= read -r _hcy; do
+        [ -z "$_hcy" ] && continue
+        printf "  ${WHITE}%s${R}\n" "$_hcy"
+    done < /tmp/hy2_clash.txt
+    rm -f /tmp/hy2_clash.txt
 fi
 echo -e "${CYAN}══════════════════════════════════════════════════════════════════"
 echo -e "  本脚本由 猫e/acc (CatEacc) 维护提供"
