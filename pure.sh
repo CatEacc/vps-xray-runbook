@@ -43,7 +43,7 @@ SERVER_IP=$(printf "%s" "$SERVER_IP" | tr -d '[:space:]')
 [[ "$SERVER_IP" =~ ^[0-9a-fA-F.:]+$ ]] || SERVER_IP="YOUR_SERVER_IP"
 
 SCRIPT_VER=$(curl -fsSm 2 https://api.github.com/repos/CatEacc/vps-xray-runbook/releases/latest 2>/dev/null | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n 1 | cut -d'"' -f4 || true)
-SCRIPT_VER="${SCRIPT_VER:-v1.2.7}"
+SCRIPT_VER="${SCRIPT_VER:-v1.2.8}"
 
 print_cateacc_logo() {
     local G1="${ESC}[38;5;46m" G2="${ESC}[38;5;82m" G3="${ESC}[38;5;154m" G4="${ESC}[38;5;226m"
