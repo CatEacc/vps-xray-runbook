@@ -111,6 +111,16 @@ clean_domain() {
     printf "%s" "$1" | sed -E 's#^https?://##; s#/.*$##; s#:[0-9]+$##' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
 }
 
+safe_sed_i() {
+    local expr="$1" f="$2" tmp
+    [ -f "$f" ] || return 0
+    tmp=$(mktemp) || return 0
+    if sed "$expr" "$f" > "$tmp" 2>/dev/null; then
+        cat "$tmp" > "$f" 2>/dev/null || true
+    fi
+    rm -f "$tmp"
+}
+
 # ------------------------------------------------------------------------------
 # 0. 交互菜单（也支持命令行传参: bash setup.sh [1-8|sni]）
 # ------------------------------------------------------------------------------
@@ -789,7 +799,7 @@ case "$MODE" in
         fi
         if [ -f "${BACKUP_DIR}/swap_created_by_script" ] && [ -f /swapfile ]; then
             swapoff /swapfile 2>/dev/null || true
-            sed -i '\|/swapfile|d' /etc/fstab
+            safe_sed_i '\|/swapfile|d' /etc/fstab
             rm -f /swapfile "${BACKUP_DIR}/swap_created_by_script"
         fi
         echo "  [完成] 已恢复系统底层调优原厂快照 (拥塞控制: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo N/A))"
@@ -1155,7 +1165,7 @@ apt-get -o DPkg::Lock::Timeout=60 install -y curl wget unzip chrony cron iptable
 
 echo "[2/5] 配置原子钟对时、1GB Swap 兜底、默认封禁出站 TCP 25、日志限额与 SSH/Fail2ban 加固..."
 systemctl enable --now chrony 2>/dev/null || true
-chronyc makestep 2>/dev/null || true
+chronyc makestep >/dev/null 2>&1 || true
 timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
 systemctl restart cron 2>/dev/null || true
 
@@ -1183,7 +1193,7 @@ if swapon --show=NAME --noheadings 2>/dev/null | grep -qx "/swapfile"; then
     grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw,nofail 0 0" >> /etc/fstab
     if [ -f /swap.img ] && [ "$(stat -c%s /swap.img 2>/dev/null || echo 1073741824)" -lt 943718400 ]; then
         swapoff /swap.img 2>/dev/null || true
-        sed -i '\|/swap\.img|d' /etc/fstab
+        safe_sed_i '\|/swap\.img|d' /etc/fstab
         rm -f /swap.img
     fi
 fi
@@ -1235,15 +1245,15 @@ systemctl disable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgra
 apt-get clean >/dev/null 2>&1 || true
 
 if [ -f /etc/gai.conf ]; then
-    sed -i '/^precedence ::ffff:0:0\/96\s\+100/d' /etc/gai.conf
-    echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
+    safe_sed_i '/^precedence ::ffff:0:0\/96\s\+100/d' /etc/gai.conf
+    echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf 2>/dev/null || true
 fi
 if [ ! -L /etc/resolv.conf ] && [ -f /etc/resolv.conf ]; then
-    sed -i '/^options /d' /etc/resolv.conf
+    safe_sed_i '/^options /d' /etc/resolv.conf
     if [ -z "$(ip -6 addr show scope global 2>/dev/null | grep inet6 || true)" ]; then
-        sed -i '/^nameserver .*:/d' /etc/resolv.conf
+        safe_sed_i '/^nameserver .*:/d' /etc/resolv.conf
     fi
-    echo "options timeout:1 attempts:2" >> /etc/resolv.conf
+    echo "options timeout:1 attempts:2" >> /etc/resolv.conf 2>/dev/null || true
 elif systemctl is-active --quiet systemd-resolved 2>/dev/null; then
     mkdir -p /etc/systemd/resolved.conf.d
     printf "[Resolve]\nDNS=1.1.1.1 8.8.8.8\nFallbackDNS=1.0.0.1 9.9.9.9\n" > /etc/systemd/resolved.conf.d/99-fast-dns.conf
@@ -1252,9 +1262,9 @@ fi
 
 # 开启 SSH 公钥登录；注意不盲目静默关闭密码登录（防止 AWS/Oracle cloud-init 占位符公钥把密码用户锁在门外）
 mkdir -p /run/sshd
-sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+safe_sed_i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
-grep -q "^PubkeyAuthentication yes" /etc/ssh/sshd_config || echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
+grep -q "^PubkeyAuthentication yes" /etc/ssh/sshd_config 2>/dev/null || echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config 2>/dev/null || true
 if sshd -t 2>/dev/null; then
     systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 fi
