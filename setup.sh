@@ -1041,15 +1041,25 @@ if isp_str or org_str:
 if is_dc is not None:
     print(f"  属性标记:    hosting(机房)={is_dc} | proxy(代理)={is_proxy} | mobile(蜂窝)={is_mobile}")
 
-rdap_net = rdap_range = rdap_org = ""
+rdap_net = rdap_range = rdap_org = rdap_cc = rdap_type = rdap_reg = rdap_upd = rdap_rir = ""
 if ip:
     try:
         req = urllib.request.Request(f"https://rdap.org/ip/{ip}", headers={"User-Agent": "CatEacc-ISP-Check/1.0", "Accept": "application/rdap+json"})
         rd = json.loads(urllib.request.urlopen(req, timeout=6).read().decode())
         rdap_net = rd.get("name") or ""
+        rdap_cc = rd.get("country") or ""
+        rdap_type = rd.get("type") or ""
+        rdap_rir = rd.get("port43") or ""
         s_ip, e_ip = rd.get("startAddress") or "", rd.get("endAddress") or ""
         if s_ip and e_ip:
             rdap_range = f"{s_ip} - {e_ip}"
+        for ev in (rd.get("events") or []):
+            act = (ev.get("eventAction") or "").lower()
+            dt = str(ev.get("eventDate") or "")[:10]
+            if act == "registration" and dt and not rdap_reg:
+                rdap_reg = dt
+            elif act == "last changed" and dt and not rdap_upd:
+                rdap_upd = dt
         for ent in (rd.get("entities") or []):
             vcard = ent.get("vcardArray")
             if isinstance(vcard, list) and len(vcard) > 1:
@@ -1061,7 +1071,39 @@ if ip:
                 break
     except Exception:
         pass
+    if rdap_rir and (not rdap_type or not rdap_org or not rdap_reg):
+        try:
+            with socket.create_connection((rdap_rir, 43), timeout=3.5) as ws:
+                q_str = (f"n + {ip}\r\n" if "arin" in rdap_rir.lower() else f"{ip}\r\n").encode()
+                ws.sendall(q_str)
+                chunks = []
+                while True:
+                    b = ws.recv(4096)
+                    if not b:
+                        break
+                    chunks.append(b)
+                    if sum(len(x) for x in chunks) > 32768:
+                        break
+                wtxt = b"".join(chunks).decode("utf-8", errors="ignore")
+                for wln in wtxt.splitlines():
+                    if ":" not in wln or wln.startswith(("#", "%")):
+                        continue
+                    wk, wv = [x.strip() for x in wln.split(":", 1)]
+                    wkl = wk.lower()
+                    if not rdap_org and wkl in ("orgname", "org-name", "descr", "owner"):
+                        rdap_org = wv
+                    elif not rdap_type and wkl in ("nettype", "status"):
+                        rdap_type = wv
+                    elif not rdap_cc and wkl == "country":
+                        rdap_cc = wv
+                    elif not rdap_reg and wkl in ("regdate", "created"):
+                        rdap_reg = wv[:10]
+                    elif not rdap_upd and wkl in ("updated", "last-modified"):
+                        rdap_upd = wv[:10]
+        except Exception:
+            pass
 print(f"  RDAP 归属:   NetName={rdap_net or '查询超时'} | 组织={rdap_org or '-'} | 段={rdap_range or '-'}")
+print(f"  WHOIS 详情:  国家={rdap_cc or '-'} | 类型={rdap_type or '-'} | 注册={rdap_reg or '-'} | 更新={rdap_upd or '-'} | 注册局={rdap_rir or '-'}")
 
 virt = "unknown"
 try:
