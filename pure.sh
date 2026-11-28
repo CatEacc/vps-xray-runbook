@@ -65,10 +65,51 @@ print_cateacc_logo() {
 BANNER
 }
 
+IS_ALPINE=0
+[ -f /etc/alpine-release ] && IS_ALPINE=1
+IS_SYSTEMD=0
+[ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1 && IS_SYSTEMD=1
+
+svc_is_active() {
+    if [ "$IS_SYSTEMD" = "1" ]; then
+        systemctl is-active --quiet "$1" 2>/dev/null
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service "$1" status >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
+svc_enable_now() {
+    if [ "$IS_SYSTEMD" = "1" ]; then
+        systemctl enable --now "$1" >/dev/null 2>&1 || true
+    elif command -v rc-update >/dev/null 2>&1; then
+        rc-update add "$1" default >/dev/null 2>&1 || true
+        rc-service "$1" start >/dev/null 2>&1 || true
+    fi
+}
+
+svc_restart() {
+    if [ "$IS_SYSTEMD" = "1" ]; then
+        systemctl restart "$1"
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service "$1" restart
+    fi
+}
+
+svc_disable_now() {
+    if [ "$IS_SYSTEMD" = "1" ]; then
+        systemctl disable --now "$1" >/dev/null 2>&1 || true
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service "$1" stop >/dev/null 2>&1 || true
+        rc-update del "$1" default >/dev/null 2>&1 || true
+    fi
+}
+
 svc_badge() {
-    if systemctl is-active --quiet "$1" 2>/dev/null; then
+    if svc_is_active "$1"; then
         printf "${GREEN}● 运行中${R}"
-    elif systemctl list-unit-files "${1}.service" 2>/dev/null | grep -q "^${1}\.service"; then
+    elif { [ "$IS_SYSTEMD" = "1" ] && systemctl list-unit-files "${1}.service" 2>/dev/null | grep -q "^${1}\.service"; } || [ -x "/etc/init.d/${1}" ]; then
         printf "${YELLOW}● 已停止${R}"
     else
         printf "${DIM}○ 未安装${R}"
@@ -123,6 +164,7 @@ LISTEN_PORT=""
 SUBMODE="1"          # 1=XHTTP+REALITY, 2=raw+Vision+REALITY, 3=家宽SS-2022落地
 REALITY_SNI="addons.mozilla.org"
 ENABLE_MLDSA65="n"
+ENABLE_ANTISTEAL="n"
 CF_DOMAIN="cf.example.com"
 CF_OPT_HOST="www.visa.com.hk"
 ENABLE_RELAY="n"
@@ -594,6 +636,8 @@ case "$MODE" in
             esac
             read -rp "是否开启 RPRX 最新抗量子 REALITY 签名 (mldsa65，需新版 v2rayN/v2rayNG)? [y/N]: " ENABLE_MLDSA65
             ENABLE_MLDSA65="${ENABLE_MLDSA65:-n}"
+            read -rp "是否开启官方 REALITY 防偷回落结构 (dokodemo-door + 127.0.0.1 嗅探门卫，防被扫蹭证书)? [y/N]: " ENABLE_ANTISTEAL
+            ENABLE_ANTISTEAL="${ENABLE_ANTISTEAL:-n}"
             _def_pre="VLESS-Vision-REALITY"
             [ "$SUBMODE" = "1" ] && _def_pre="VLESS-XHTTP-REALITY"
             prompt_multi_clients "$_def_pre"
@@ -678,8 +722,11 @@ meta = json.load(open(meta_path, encoding="utf-8")) if os.path.exists(meta_path)
 found = 0
 for inb in cfg.get("inbounds", []):
     proto = inb.get("protocol", "")
+    if proto == "dokodemo-door":
+        continue
     tag = inb.get("tag", f"in-{inb.get('port')}")
-    port = inb.get("port")
+    m_tag = meta.get(tag, {})
+    port = m_tag.get("public_port") or inb.get("port")
     s = inb.get("settings", {})
     st = inb.get("streamSettings", {})
     net = st.get("network", "tcp")
@@ -689,13 +736,15 @@ for inb in cfg.get("inbounds", []):
         for cl in s.get("clients", []):
             uid = cl.get("id", "")
             flow = cl.get("flow", "")
+            cl_label = cl.get("email") or tag
             conn_host = uri_ip
             q = [f"type={url_net}", "encryption=none", f"security={sec}"]
+            clash_line = ""
             if sec == "reality":
                 rs = st.get("realitySettings", {})
                 sni = (rs.get("serverNames") or [""])[0]
                 sid = (rs.get("shortIds") or [""])[0]
-                m = meta.get(tag, {})
+                m = m_tag
                 pbk = m.get("pbk", "")
                 if not pbk and rs.get("privateKey") and os.path.exists(xray_bin):
                     try:
@@ -720,8 +769,12 @@ for inb in cfg.get("inbounds", []):
                 q += [f"pbk={pbk}", "fp=chrome", f"sni={sni}", f"sid={sid}", "spx=%2F"]
                 if pqv:
                     q.append(f"pqv={urllib.parse.quote(pqv, safe='')}")
+                if url_net == "tcp":
+                    safe_nm = cl_label.replace('"', '\\"')
+                    fl_part = f", flow: {flow}" if flow else ""
+                    clash_line = f'- {{name: "{safe_nm}", type: vless, server: "{ip}", port: {port}, uuid: "{uid}", udp: true, tls: true{fl_part}, servername: "{sni}", reality-opts: {{public-key: "{pbk}", short-id: "{sid}"}}, client-fingerprint: chrome}}'
             elif sec == "tls":
-                host = st.get("tlsSettings", {}).get("serverName") or meta.get(tag, {}).get("host", "cf.example.com")
+                host = st.get("tlsSettings", {}).get("serverName") or m_tag.get("host", "cf.example.com")
                 conn_host = host
                 q += [f"sni={host}", f"host={host}", "fp=chrome"]
             if net == "xhttp":
@@ -729,8 +782,10 @@ for inb in cfg.get("inbounds", []):
                 q += [f"path={urllib.parse.quote(xh.get('path', '/vless-xhttp'), safe='')}", f"mode={xh.get('mode', 'auto')}"]
             if flow:
                 q.append(f"flow={flow}")
-            link = f"vless://{uid}@{conn_host}:{port}?{'&'.join(q)}#{urllib.parse.quote(tag)}"
-            print(f"  [{tag}] {link}")
+            link = f"vless://{uid}@{conn_host}:{port}?{'&'.join(q)}#{urllib.parse.quote(cl_label)}"
+            print(f"  [{cl_label}] {link}")
+            if clash_line:
+                print(f"    [Clash/Mihomo] {clash_line}")
             print_qr(link)
             found += 1
     elif proto == "shadowsocks":
@@ -739,6 +794,7 @@ for inb in cfg.get("inbounds", []):
         cred = base64.urlsafe_b64encode(f"{method}:{pwd}".encode()).decode().rstrip("=")
         link = f"ss://{cred}@{uri_ip}:{port}#{urllib.parse.quote(tag)}"
         print(f"  [{tag}] {link}")
+        print(f'    [Clash/Mihomo] - {{name: "{tag}", type: ss, server: "{ip}", port: {port}, cipher: "{method}", password: "{pwd}", udp: true}}')
         print(f"    (家宽中转参数: IP={ip} | PORT={port} | PASS={pwd})")
         found += 1
 if not found:
@@ -863,14 +919,21 @@ esac
 # ------------------------------------------------------------------------------
 # 阶段一：系统底层优化、1GB Swap、日志收敛、Fail2ban、高并发内核栈与默认封出站 TCP 25
 # ------------------------------------------------------------------------------
-echo "[1/4] 更新依赖并配置原子钟 / 1GB Swap / Journald 50M / 默认封禁出站 TCP 25 / Fail2ban..."
-export DEBIAN_FRONTEND=noninteractive
-apt-get -o DPkg::Lock::Timeout=60 update -y && (apt-get -o DPkg::Lock::Timeout=60 install -y curl wget unzip chrony nftables fail2ban python3 python3-systemd openssl qrencode || \
-  apt-get -o DPkg::Lock::Timeout=60 install -y curl wget unzip chrony nftables fail2ban python3 openssl)
-
-systemctl enable --now chrony 2>/dev/null || true
-chronyc makestep 2>/dev/null || true
-timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
+echo "[1/4] 更新依赖并配置原子钟 / 1GB Swap / 日志收敛 / 默认封禁出站 TCP 25 / Fail2ban..."
+if [ "$IS_ALPINE" = "1" ] || { ! command -v apt-get >/dev/null 2>&1 && command -v apk >/dev/null 2>&1; }; then
+    apk update >/dev/null 2>&1 || true
+    apk add --no-cache bash curl wget unzip chrony nftables python3 openssl iproute2 coreutils libqrencode-tools fail2ban >/dev/null 2>&1 || \
+      apk add --no-cache bash curl wget unzip chrony nftables python3 openssl iproute2 coreutils || true
+    svc_enable_now chronyd
+    chronyc makestep 2>/dev/null || true
+else
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o DPkg::Lock::Timeout=60 update -y && (apt-get -o DPkg::Lock::Timeout=60 install -y curl wget unzip chrony nftables fail2ban python3 python3-systemd openssl qrencode || \
+      apt-get -o DPkg::Lock::Timeout=60 install -y curl wget unzip chrony nftables fail2ban python3 openssl)
+    svc_enable_now chrony
+    chronyc makestep 2>/dev/null || true
+    timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
+fi
 
 if [ ! -f /swapfile ]; then
     if fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none; then
@@ -889,7 +952,8 @@ if swapon --show=NAME --noheadings 2>/dev/null | grep -qx "/swapfile"; then
     grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw,nofail 0 0" >> /etc/fstab
 fi
 
-cat << 'EOF' > /etc/systemd/journald.conf
+if [ "$IS_SYSTEMD" = "1" ]; then
+    cat << 'EOF' > /etc/systemd/journald.conf
 [Journal]
 SystemMaxUse=50M
 SystemMaxFileSize=10M
@@ -897,20 +961,24 @@ RuntimeMaxUse=20M
 MaxRetentionSec=7day
 ForwardToSyslog=no
 EOF
-systemctl restart systemd-journald 2>/dev/null || true
-journalctl --rotate 2>/dev/null || true
-journalctl --vacuum-size=40M >/dev/null 2>&1 || true
-systemctl disable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service 2>/dev/null || true
+    systemctl restart systemd-journald 2>/dev/null || true
+    journalctl --rotate 2>/dev/null || true
+    journalctl --vacuum-size=40M >/dev/null 2>&1 || true
+    systemctl disable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service 2>/dev/null || true
+fi
 
 if [ -f /etc/gai.conf ]; then
     sed -i '/^precedence ::ffff:0:0\/96\s\+100/d' /etc/gai.conf
     echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
 fi
 
-mkdir -p /run/sshd
-SSH_PORTS=$( (sshd -T 2>/dev/null || true) | awk '$1=="port"{print $2}' | paste -sd, - )
-SSH_PORTS="${SSH_PORTS:-22}"
-cat << EOF > /etc/fail2ban/jail.local
+if command -v fail2ban-server >/dev/null 2>&1; then
+    mkdir -p /run/sshd /etc/fail2ban
+    SSH_PORTS=$( (sshd -T 2>/dev/null || true) | awk '$1=="port"{print $2}' | paste -sd, - )
+    SSH_PORTS="${SSH_PORTS:-22}"
+    F2B_BACKEND="auto"
+    [ "$IS_SYSTEMD" = "1" ] && F2B_BACKEND="systemd"
+    cat << EOF > /etc/fail2ban/jail.local
 [DEFAULT]
 bantime = 86400
 bantime.increment = true
@@ -918,15 +986,16 @@ bantime.factor = 2
 bantime.maxtime = 2592000
 findtime = 600
 maxretry = 3
-backend = systemd
+backend = $F2B_BACKEND
 
 [sshd]
 enabled = true
 port = $SSH_PORTS
 mode = aggressive
 EOF
-systemctl enable --now fail2ban 2>/dev/null || true
-systemctl restart fail2ban 2>/dev/null || true
+    svc_enable_now fail2ban
+    svc_restart fail2ban >/dev/null 2>&1 || true
+fi
 
 if command -v nft >/dev/null 2>&1; then
     mkdir -p /etc/nftables.d
@@ -941,7 +1010,9 @@ table inet smtp_guard {
 }
 EOF
     nft -f /etc/nftables.d/smtp-guard.nft 2>/dev/null || true
-    cat << 'EOF' > /etc/systemd/system/smtp-guard.service
+    NFT_BIN="$(command -v nft)"
+    if [ "$IS_SYSTEMD" = "1" ]; then
+        cat << EOF > /etc/systemd/system/smtp-guard.service
 [Unit]
 Description=Block Outbound TCP 25 (SMTP Anti-Spam)
 After=network-online.target
@@ -950,13 +1021,24 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/nft -f /etc/nftables.d/smtp-guard.nft
-ExecStop=/usr/sbin/nft delete table inet smtp_guard
+ExecStart=${NFT_BIN} -f /etc/nftables.d/smtp-guard.nft
+ExecStop=${NFT_BIN} delete table inet smtp_guard
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload && systemctl enable --now smtp-guard.service >/dev/null 2>&1 || true
+        systemctl daemon-reload && systemctl enable --now smtp-guard.service >/dev/null 2>&1 || true
+    elif [ -d /etc/init.d ]; then
+        cat << EOF > /etc/init.d/smtp-guard
+#!/sbin/openrc-run
+description="Block Outbound TCP 25 (SMTP Anti-Spam)"
+depend() { need net; }
+start() { ${NFT_BIN} -f /etc/nftables.d/smtp-guard.nft; }
+stop() { ${NFT_BIN} delete table inet smtp_guard 2>/dev/null || true; }
+EOF
+        chmod +x /etc/init.d/smtp-guard
+        svc_enable_now smtp-guard
+    fi
 fi
 
 echo "[2/4] 写入按内存分档的高并发网络内核栈 (BBR + FQ + MPTCP=0)..."
@@ -1046,7 +1128,8 @@ install -m 644 /tmp/xray-pure/geoip.dat "${XRAY_SHARE}/geoip.dat"
 install -m 644 /tmp/xray-pure/geosite.dat "${XRAY_SHARE}/geosite.dat"
 rm -rf /tmp/xray-pure
 
-cat << 'EOF' > /etc/systemd/system/xray.service
+if [ "$IS_SYSTEMD" = "1" ]; then
+    cat << 'EOF' > /etc/systemd/system/xray.service
 [Unit]
 Description=Xray-core Service (Pure JSON, Zero Panel)
 Documentation=https://xtls.github.io/
@@ -1065,7 +1148,29 @@ OOMScoreAdjust=-500
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
+    systemctl daemon-reload
+elif [ -d /etc/init.d ]; then
+    cat << 'EOF' > /etc/init.d/xray
+#!/sbin/openrc-run
+name="xray"
+description="Xray-core Service (Pure JSON, Zero Panel)"
+command="/usr/local/bin/xray"
+command_args="run -config /usr/local/etc/xray/config.json"
+command_background=true
+pidfile="/run/xray.pid"
+rc_ulimit="-n 1048576"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    export XRAY_LOCATION_ASSET="/usr/local/share/xray"
+}
+EOF
+    chmod +x /etc/init.d/xray
+fi
 
 # ------------------------------------------------------------------------------
 # 阶段三：生成标准手搓 /usr/local/etc/xray/config.json 并执行 xray run -test 强校验
@@ -1089,7 +1194,7 @@ fi
 
 install -m 600 /dev/null /tmp/pure_result.txt
 MODE="$MODE" SUBMODE="$SUBMODE" LISTEN_PORT="$LISTEN_PORT" REALITY_SNI="$REALITY_SNI" \
-ENABLE_MLDSA65="$ENABLE_MLDSA65" CF_DOMAIN="$CF_DOMAIN" ENABLE_RELAY="$ENABLE_RELAY" \
+ENABLE_MLDSA65="$ENABLE_MLDSA65" ENABLE_ANTISTEAL="${ENABLE_ANTISTEAL:-n}" CF_DOMAIN="$CF_DOMAIN" ENABLE_RELAY="$ENABLE_RELAY" \
 RES_PROTO="${RES_PROTO:-ss}" RES_IP="$RES_IP" RES_PORT="$RES_PORT" RES_USER="${RES_USER:-}" RES_SS_PASS="$RES_SS_PASS" XRAY_BUF="$XRAY_BUF" \
 NODE_PREFIX="${NODE_PREFIX:-}" CLIENT_COUNT="${CLIENT_COUNT:-1}" CLIENT_REMARKS="${CLIENT_REMARKS:-}" \
 SERVER_IP="$SERVER_IP" XRAY_BIN="$XRAY_BIN" XRAY_CFG="$XRAY_CFG" python3 - << 'GENPY' > /tmp/pure_result.txt
@@ -1101,6 +1206,7 @@ submode = os.environ["SUBMODE"]
 port = int(os.environ["LISTEN_PORT"])
 sni = os.environ["REALITY_SNI"]
 use_pq = os.environ.get("ENABLE_MLDSA65", "n").lower() == "y"
+use_antisteal = os.environ.get("ENABLE_ANTISTEAL", "n").lower() == "y"
 cf_domain = os.environ["CF_DOMAIN"]
 relay_on = os.environ.get("ENABLE_RELAY", "n").lower() == "y"
 res_proto = (os.environ.get("RES_PROTO") or "ss").strip().lower()
@@ -1135,6 +1241,11 @@ existing_same_port = [x for x in cfg.get("inbounds", []) if x.get("port") == por
 reused_inb = None
 if existing_same_port and mode in ("1", "2") and not (mode == "1" and submode == "3"):
     cand = existing_same_port[0]
+    if cand.get("protocol") == "dokodemo-door":
+        _inner_p = cand.get("settings", {}).get("port")
+        _inner_list = [x for x in cfg.get("inbounds", []) if x.get("port") == _inner_p and x.get("listen") == "127.0.0.1"]
+        if _inner_list:
+            cand = _inner_list[0]
     st_ex = cand.get("streamSettings", {})
     want_sec = "reality" if mode == "1" else "tls"
     want_net = ("xhttp" if submode == "1" else "raw") if mode == "1" else "xhttp"
@@ -1144,20 +1255,29 @@ if existing_same_port and mode in ("1", "2") and not (mode == "1" and submode ==
 
 removed_tags = set()
 if reused_inb is None:
-    removed_tags = {x.get("tag") for x in existing_same_port if x.get("tag")}
+    removed_ports = {port}
+    for x in existing_same_port:
+        if x.get("tag"):
+            removed_tags.add(x.get("tag"))
+        if x.get("protocol") == "dokodemo-door" and x.get("settings", {}).get("port"):
+            removed_ports.add(x["settings"]["port"])
+    for x in cfg.get("inbounds", []):
+        if x.get("port") in removed_ports and x.get("tag"):
+            removed_tags.add(x.get("tag"))
     for rt in removed_tags:
         meta.pop(rt, None)
-    inbounds = [x for x in cfg.get("inbounds", []) if x.get("port") != port]
+    inbounds = [x for x in cfg.get("inbounds", []) if x.get("port") not in removed_ports]
 else:
     inbounds = list(cfg.get("inbounds", []))
 
-outbounds = [x for x in cfg.get("outbounds", []) if x.get("tag") not in ("direct", "blocked")]
+outbounds = [x for x in cfg.get("outbounds", []) if x.get("tag") not in ("direct", "blocked", "direct-loopback")]
 outbounds = [
     {"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "UseIPv4"}},
     {"tag": "blocked", "protocol": "blackhole", "settings": {}},
 ] + outbounds
 
 old_rules = cfg.get("routing", {}).get("rules", [])
+guard_rules = []
 custom_rules = []
 for r in old_rules:
     if r.get("outboundTag") == "blocked" and (
@@ -1167,6 +1287,11 @@ for r in old_rules:
     ):
         continue
     if r.get("outboundTag") == "direct" and r.get("domain") == ["geosite:google"] and not r.get("ip") and not r.get("inboundTag"):
+        continue
+    in_tags = r.get("inboundTag") or []
+    if any(str(t).startswith("guard-") for t in in_tags):
+        if not (set(in_tags) & removed_tags):
+            guard_rules.append(r)
         continue
     custom_rules.append(r)
 
@@ -1191,6 +1316,7 @@ def make_batch_clients(prefix, flow_val, existing_emails):
 
 share_link = ""
 share_items = []
+clash_items = []
 new_client_emails = []
 tag = f"in-{port}"
 
@@ -1204,6 +1330,7 @@ if mode == "1" and submode == "3":
     })
     cred = base64.urlsafe_b64encode(f"2022-blake3-aes-256-gcm:{ss_pass}".encode()).decode().rstrip("=")
     share_link = f"ss://{cred}@{uri_ip}:{port}#{urllib.parse.quote(tag)}"
+    clash_items.append((tag, f'- {{name: "{tag}", type: ss, server: "{server_ip}", port: {port}, cipher: "2022-blake3-aes-256-gcm", password: "{ss_pass}", udp: true}}'))
     print("RESULT_TYPE=RESIDENTIAL_SS")
     print(f"SS_IP={server_ip}")
     print(f"SS_PORT={port}")
@@ -1257,13 +1384,34 @@ elif mode == "1":
         }
         if is_xhttp:
             st["xhttpSettings"] = {"path": "/vless-xhttp", "mode": "auto"}
-        inbounds.append({
-            "tag": tag, "listen": "::", "port": port, "protocol": "vless",
-            "settings": {"clients": batch, "decryption": "none"},
-            "streamSettings": st,
-            "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
-        })
-        meta[tag] = {"pbk": pub, "pqv": pq_verify}
+        if use_antisteal:
+            used_ports = {x.get("port") for x in inbounds} | {port}
+            inner_port = 4431 if (port == 443 and 4431 not in used_ports) else (10000 + (port % 50000))
+            while inner_port in used_ports:
+                inner_port += 1
+            guard_tag = f"guard-{tag}"
+            inbounds.append({
+                "tag": guard_tag, "listen": "::", "port": port, "protocol": "dokodemo-door",
+                "settings": {"address": "127.0.0.1", "port": inner_port, "network": "tcp"},
+                "sniffing": {"enabled": True, "destOverride": ["tls"], "routeOnly": True},
+            })
+            inbounds.append({
+                "tag": tag, "listen": "127.0.0.1", "port": inner_port, "protocol": "vless",
+                "settings": {"clients": batch, "decryption": "none"},
+                "streamSettings": st,
+                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
+            })
+            guard_rules.append({"type": "field", "inboundTag": [guard_tag], "domain": [f"full:{sni}"], "outboundTag": "direct-loopback"})
+            guard_rules.append({"type": "field", "inboundTag": [guard_tag], "outboundTag": "blocked"})
+            meta[tag] = {"pbk": pub, "pqv": pq_verify, "public_port": port, "guard_tag": guard_tag}
+        else:
+            inbounds.append({
+                "tag": tag, "listen": "::", "port": port, "protocol": "vless",
+                "settings": {"clients": batch, "decryption": "none"},
+                "streamSettings": st,
+                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "routeOnly": True},
+            })
+            meta[tag] = {"pbk": pub, "pqv": pq_verify}
     new_client_emails = [c["email"] for c in batch]
     q = [f"type={'xhttp' if is_xhttp else 'tcp'}", "encryption=none", "security=reality", f"pbk={pub}", "fp=chrome", f"sni={sni}", f"sid={sid}", "spx=%2F"]
     if is_xhttp: q += ["path=%2Fvless-xhttp", "mode=auto"]
@@ -1272,6 +1420,9 @@ elif mode == "1":
     for c in batch:
         lnk = f"vless://{c['id']}@{uri_ip}:{port}?{'&'.join(q)}#{urllib.parse.quote(c['email'])}"
         share_items.append((c["email"], lnk))
+        if not is_xhttp:
+            safe_nm = c["email"].replace('"', '\\"')
+            clash_items.append((c["email"], f'- {{name: "{safe_nm}", type: vless, server: "{server_ip}", port: {port}, uuid: "{c["id"]}", udp: true, tls: true, flow: xtls-rprx-vision, servername: "{sni}", reality-opts: {{public-key: "{pub}", short-id: "{sid}"}}, client-fingerprint: chrome}}'))
     share_link = share_items[0][1] if len(share_items) == 1 else ""
     print("RESULT_TYPE=LINK")
 elif mode == "2":
@@ -1339,6 +1490,9 @@ if relay_valid:
 valid_ob_tags = {x.get("tag") for x in outbounds if x.get("tag")}
 custom_rules = [r for r in custom_rules if not (str(r.get("outboundTag", "")).startswith("out-res-") and r.get("outboundTag") not in valid_ob_tags)]
 
+if guard_rules:
+    outbounds.append({"tag": "direct-loopback", "protocol": "freedom", "settings": {}})
+
 cfg["inbounds"] = inbounds
 cfg["outbounds"] = outbounds
 has_relay_rule = any(str(r.get("outboundTag", "")).startswith("out-res-") for r in custom_rules)
@@ -1352,7 +1506,7 @@ if not has_relay_rule:
 base_rules.append({"type": "field", "outboundTag": "blocked", "ip": ["geoip:cn"]})
 cfg["routing"] = {
     "domainStrategy": "IPOnDemand",
-    "rules": base_rules + custom_rules,
+    "rules": guard_rules + base_rules + custom_rules,
 }
 
 tmp_cfg = cfg_path + ".new"
@@ -1369,6 +1523,8 @@ with open(meta_path, "w", encoding="utf-8") as f:
 os.chmod(meta_path, 0o600)
 for _em, _lnk in share_items:
     print(f"SHARE_LINK_ITEM={_em}|{_lnk}")
+for _em, _cy in clash_items:
+    print(f"CLASH_YAML_ITEM={_em}|{_cy}")
 if share_link:
     print("SHARE_LINK=" + share_link)
 GENPY
@@ -1417,7 +1573,9 @@ open("/etc/nftables.d/res-whitelist.nft", "w", encoding="utf-8").write("\n".join
 NFTPY
     then
         if nft -f /etc/nftables.d/res-whitelist.nft; then
-            cat << 'EOF' > /etc/systemd/system/res-guard.service
+            NFT_BIN="$(command -v nft)"
+            if [ "$IS_SYSTEMD" = "1" ]; then
+                cat << EOF > /etc/systemd/system/res-guard.service
 [Unit]
 Description=Xray Residential Landing Port Whitelist
 After=network-online.target
@@ -1426,14 +1584,25 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/nft -f /etc/nftables.d/res-whitelist.nft
-ExecStop=/usr/sbin/nft delete table inet res_guard
+ExecStart=${NFT_BIN} -f /etc/nftables.d/res-whitelist.nft
+ExecStop=${NFT_BIN} delete table inet res_guard
 
 [Install]
 WantedBy=multi-user.target
 EOF
-            systemctl daemon-reload && systemctl enable --now res-guard.service >/dev/null 2>&1 || true
-            echo "  [OK] 家宽端口 ${LISTEN_PORT} 白名单已生效并配置开机自启 (res-guard.service)"
+                systemctl daemon-reload && systemctl enable --now res-guard.service >/dev/null 2>&1 || true
+            elif [ -d /etc/init.d ]; then
+                cat << EOF > /etc/init.d/res-guard
+#!/sbin/openrc-run
+description="Xray Residential Landing Port Whitelist"
+depend() { need net; }
+start() { ${NFT_BIN} -f /etc/nftables.d/res-whitelist.nft; }
+stop() { ${NFT_BIN} delete table inet res_guard 2>/dev/null || true; }
+EOF
+                chmod +x /etc/init.d/res-guard
+                svc_enable_now res-guard
+            fi
+            echo "  [OK] 家宽端口 ${LISTEN_PORT} 白名单已生效并配置开机自启"
         else
             echo "  [警告] nftables 家宽白名单加载失败！请检查内核 nftables 支持！" >&2
         fi
@@ -1441,21 +1610,25 @@ EOF
         echo "  [警告] 白名单 IP (${RES_WHITELIST_IP}) 含非法地址，已跳过防火墙白名单以免断联！" >&2
     fi
 elif [ "$MODE" = "1" ] && [ "$SUBMODE" = "3" ]; then
-    systemctl disable --now res-guard.service >/dev/null 2>&1 || true
+    svc_disable_now res-guard
     nft delete table inet res_guard >/dev/null 2>&1 || true
-    rm -f /etc/nftables.d/res-whitelist.nft /etc/systemd/system/res-guard.service
-    systemctl daemon-reload >/dev/null 2>&1 || true
+    rm -f /etc/nftables.d/res-whitelist.nft /etc/systemd/system/res-guard.service /etc/init.d/res-guard
+    [ "$IS_SYSTEMD" = "1" ] && systemctl daemon-reload >/dev/null 2>&1 || true
 fi
 
-systemctl enable --now xray
-systemctl restart xray
+svc_enable_now xray
+svc_restart xray
 sleep 1
 echo ""
 echo "=================================================================="
-if systemctl is-active --quiet xray; then
+if svc_is_active xray; then
     echo "  [成功] 纯原生 Xray-core (${XRAY_VERSION}) 已通过 xray run -test 并正常运行！"
 else
-    echo "  [警告] xray 服务未正常启动，请执行 journalctl -u xray -n 30 排查"
+    if [ "$IS_SYSTEMD" = "1" ]; then
+        echo "  [警告] xray 服务未正常启动，请执行 journalctl -u xray -n 30 排查"
+    else
+        echo "  [警告] xray 服务未正常启动，请执行 rc-service xray status 排查"
+    fi
 fi
 echo "  配置文件路径: ${XRAY_CFG}（随时可直接手改 JSON）"
 if [ -f /tmp/pure_result.txt ]; then
@@ -1498,6 +1671,13 @@ if [ -f /tmp/pure_result.txt ]; then
                 fi
             done < <(grep "^SHARE_LINK_ITEM=" /tmp/pure_result.txt)
         fi
+    fi
+    if grep -q "^CLASH_YAML_ITEM=" /tmp/pure_result.txt; then
+        printf "\n  ${CYAN}【Clash / Mihomo 节点配置（直接复制贴入 proxies，可搭配 vps-clash-runbook 零泄露分流）】：${R}\n"
+        while IFS='|' read -r _cem _cy; do
+            [ -z "$_cy" ] && continue
+            printf "  ${WHITE}%s${R}\n" "$_cy"
+        done < <(grep "^CLASH_YAML_ITEM=" /tmp/pure_result.txt)
     fi
     rm -f /tmp/pure_result.txt
 fi
