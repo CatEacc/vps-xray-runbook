@@ -130,6 +130,16 @@ clean_domain() {
     printf "%s" "$1" | sed -E 's#^https?://##; s#/.*$##; s#:[0-9]+$##' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
 }
 
+safe_sed_i() {
+    local expr="$1" f="$2" tmp
+    [ -f "$f" ] || return 0
+    tmp=$(mktemp) || return 0
+    if sed "$expr" "$f" > "$tmp" 2>/dev/null; then
+        cat "$tmp" > "$f" 2>/dev/null || true
+    fi
+    rm -f "$tmp"
+}
+
 MODE="${1:-}"
 SNI_QUERY_ARG="${2:-}"
 if [ -z "$MODE" ]; then
@@ -925,13 +935,13 @@ if [ "$IS_ALPINE" = "1" ] || { ! command -v apt-get >/dev/null 2>&1 && command -
     apk add --no-cache bash curl wget unzip chrony nftables python3 openssl iproute2 coreutils libqrencode-tools fail2ban >/dev/null 2>&1 || \
       apk add --no-cache bash curl wget unzip chrony nftables python3 openssl iproute2 coreutils || true
     svc_enable_now chronyd
-    chronyc makestep 2>/dev/null || true
+    chronyc makestep >/dev/null 2>&1 || true
 else
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o DPkg::Lock::Timeout=60 update -y && (apt-get -o DPkg::Lock::Timeout=60 install -y curl wget unzip chrony nftables fail2ban python3 python3-systemd openssl qrencode || \
       apt-get -o DPkg::Lock::Timeout=60 install -y curl wget unzip chrony nftables fail2ban python3 openssl)
     svc_enable_now chrony
-    chronyc makestep 2>/dev/null || true
+    chronyc makestep >/dev/null 2>&1 || true
     timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
 fi
 
@@ -968,8 +978,8 @@ EOF
 fi
 
 if [ -f /etc/gai.conf ]; then
-    sed -i '/^precedence ::ffff:0:0\/96\s\+100/d' /etc/gai.conf
-    echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
+    safe_sed_i '/^precedence ::ffff:0:0\/96\s\+100/d' /etc/gai.conf
+    echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf 2>/dev/null || true
 fi
 
 if command -v fail2ban-server >/dev/null 2>&1; then
