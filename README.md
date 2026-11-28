@@ -3,7 +3,6 @@
 [![Xray-core](https://img.shields.io/badge/Xray--core-v26.11.9-blue)](https://github.com/XTLS/Xray-core/releases)
 [![3x-ui](https://img.shields.io/badge/3x--ui-v3.11.0-green)](https://github.com/MHSanaei/3x-ui/releases)
 [![CI Check](https://github.com/CatEacc/vps-xray-runbook/actions/workflows/ci.yml/badge.svg)](https://github.com/CatEacc/vps-xray-runbook/actions/workflows/ci.yml)
-[![Wiki](https://img.shields.io/badge/Wiki-%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B%E4%B8%8EFAQ-purple)](https://github.com/CatEacc/vps-xray-runbook/wiki)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-%E7%8C%ABe%2Facc-26A5E4?logo=telegram)](https://t.me/CatCryptoMaster)
 
@@ -27,7 +26,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 
 ### 方式二：无面板纯原生 Xray-core 手搓 JSON 版（`pure.sh`，对齐 RPRX 官方文档）
 
-不装任何面板、常驻仅约 **25MB 内存**，标准配置文件落盘 `/usr/local/etc/xray/config.json`（启动前自动执行 `xray run -test` 强校验），原生支持 **XHTTP + REALITY / Vision + REALITY / `mldsa65` 抗量子签名 / SS-2022 家宽落地与一键中转 / Cloudflare CDN / 只读家宽快检**；不跑脚本也可直接参考根目录标准模板 [`config.example.json`](config.example.json)：
+不装任何面板、常驻仅约 **25MB 内存**，原生兼容 **Debian / Ubuntu (`systemd`) 与 Alpine Linux (`OpenRC`)**，标准配置文件落盘 `/usr/local/etc/xray/config.json`（启动前自动执行 `xray run -test` 强校验），原生支持 **XHTTP + REALITY / Vision + REALITY / 可选官方 `dokodemo-door` 防偷回落门卫 / `mldsa65` 抗量子签名 / 同端口批量多客户（1-50）/ 第三方 SOCKS5·HTTP 静态住宅代理按用户分流 / Clash·Mihomo 单行 YAML 输出**；不跑脚本也可直接参考根目录标准模板 [`config.example.json`](config.example.json)：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/main/pure.sh)
@@ -40,11 +39,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CatEacc/vps-xray-runbook/mai
 * **方案 1：`VLESS + REALITY`（支持一键中转家宽）**
   * 支持 RPRX 最新 **`XHTTP + REALITY`** 与全客户端通吃的 **`raw + REALITY + xtls-rprx-vision`**，端口回车默认 `443`（也可手填如 `8443` / 高位端口）；
   * 内置 **9 大地区 100% 纯本土 X25519 SNI 自动测速 + 全球 5 站兜底池**（附中文用途说明，零云厂商 / 零银行 / 零运营商 / 零敏感政府站），选中后自动执行 **实时四重复检**（`TLS 1.3 + H2` / 非 CF / 无国内 CDN / 中国大陆可达）；
-  * 内置**家宽联动子选项**：既可在海外家宽机上一键生成 `Shadowsocks-2022` 高位落地入站，也可在中国大陆优化机上通过**直接粘贴 `ss://` 分享链接自动解析**或**填后端家宽机 SSH 账密全自动远程部署落地并加白名单**一键完成前置中转；面板锁死 `127.0.0.1` 并自动识别非 22 SSH 端口生成隧道命令。
+  * 内置**家宽与住宅代理联动 + 同端口批量多客户（1-50）**：支持自定义节点前缀与客户备注、已有端口安全追加绝不覆盖老客户；支持自建 `SS-2022` 家宽落地（可粘贴 `ss://` 自动解析或 SSH 远程全自动部署）及**第三方静态住宅代理（SOCKS5 / HTTP）按用户精准分流**；部署与只读导出均自动附带 **Clash / Mihomo 单行 YAML**；面板锁死 `127.0.0.1` 并自动写入 `externalProxy` 防扫出 `localhost`。
 * **方案 2：`Cloudflare CDN 优选`（`VLESS + XHTTP + TLS`）**
-  * 默认端口 `2053`（回车即用，支持自定义其他 CF HTTPS 回源端口），自动配置 `XHTTP` 与真实 IP 透传。
-* **方案 3：`Hysteria 2`（含 `20000-50000` 端口跳跃，支持一键中转家宽）**
-  * 按线路可选标准 **QUIC BBR**（精品优化线）或 **Brutal**（廉价高丢包线）；若同机已跑 `TCP 443 REALITY`，默认错开至 `UDP 8443` 监听（配合端口跳跃，避免同 443 端口返回矛盾证书）。
+  * 默认端口 `2053`（回车即用，支持自定义其他 CF HTTPS 回源端口），内置 6 选 1 实测优选入口并自动输出免改加速链接与二维码。
+* **方案 3：`Hysteria 2`（含 `20000-50000` 端口跳跃，支持一键中转家宽与 `pinSHA256` 证书锁定）**
+  * 按线路可选标准 **QUIC BBR**（精品优化线）或 **Brutal**（廉价高丢包线）；默认 `insecure=0` + `pinSHA256`（Clash YAML 同步输出 `fingerprint` 与 `skip-cert-verify: false`）；若同机已跑 `TCP 443 REALITY`，默认错开至 `UDP 8443` 监听。
 * **方案 4：`纯系统底层内核调优模式`**
   * 仅部署 BBR / 按内存分档网络缓冲区 / 1GB Swap / MPTCP 防护 / Fail2ban / Chrony 对时 / Journald 50M 收敛，不安装任何代理面板。
 * **只读实用工具**：支持 `[5]` 一键回滚底层调优、`[6]` 只读导出全部节点链接与二维码、`[7]` **本机家宽 / 商宽 / 机房 IP 与环境快检**（直查 PTR 反解、官方 RDAP 归属、机房属性、Hyper-V 与出站 `TCP 25` 状态，不碰易误报的流媒体解锁）、`[8]` **REALITY 优选 SNI 测速与域名四重体检**（纯只读并发测速当前地区本土非 CF 候选池，并支持输入任意自定义域名检测 `TLS 1.3 + H2` / 非 CF / 无国内 CDN / 大陆直连可达，不改动本机任何配置；亦支持 `bash setup.sh sni` 直达）。
